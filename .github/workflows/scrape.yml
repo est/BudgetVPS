@@ -70,13 +70,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 重新对齐到远端最新提交，避免和上一次定时任务的数据 commit 冲突
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --mixed "origin/${GITHUB_REF_NAME}"
           git add data/products.json docs
           if git diff --cached --quiet; then
             echo "没有变化"
           else
             git commit -m "chore: update vps data $(date -u +%F)"
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-            git push
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
       - uses: actions/configure-pages@v5
