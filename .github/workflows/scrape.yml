@@ -1,0 +1,95 @@
+name: Scrape VPS & Deploy Pages
+
+on:
+  schedule:
+    # 每天 UTC 02:23（北京时间 10:23）
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scraper/**"
+      - "requirements.txt"
+      - ".github/workflows/scrape.yml"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: scrape-and-deploy
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Ensure Chrome
+        run: |
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
+            sudo apt-get install -y /tmp/chrome.deb
+          fi
+          google-chrome --version
+
+      - name: Ensure Xvfb
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y xvfb
+          fi
+          xvfb-run --help >/dev/null
+
+      - name: Crawl
+        env:
+          BASE_URL: https://billing.dedirock.com
+          MAX_PID: "400"
+          DELAY_MIN: "2.5"
+          DELAY_MAX: "4.0"
+          # 可选：如果 CI 出口 IP 被 Cloudflare 拦得太狠，可以在这里塞一个手动取得的 clearance
+          CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
+        # 无头 Chrome 过不了 CF 的 managed challenge，必须用 xvfb 起有头浏览器
+        run: xvfb-run -a python -m scraper.main
+
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/products.json docs
+          if git diff --cached --quiet; then
+            echo "没有变化"
+          else
+            git commit -m "chore: update vps data $(date -u +%F)"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: scrape
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
