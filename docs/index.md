@@ -1,6 +1,6 @@
 # Budget VPS 价格表
 
-> 数据源：https://billing.dedirock.com ｜ 更新：2026-11-12 03:16 UTC ｜ 共 52 个在售套餐
+> 数据源：https://billing.dedirock.com ｜ 更新：2026-11-12 03:51 UTC ｜ 共 52 个在售套餐
 
 | Name | CPU | RAM | SSD | Traffic | Price (per year) |
 | --- | --- | --- | --- | --- | ---: |
