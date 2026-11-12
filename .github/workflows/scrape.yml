@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - "scraper/**"
+      - "templates/**"
       - "requirements.txt"
       - ".github/workflows/scrape.yml"
 
@@ -24,7 +25,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -55,12 +56,8 @@ jobs:
           fi
           xvfb-run --help >/dev/null
 
-      - name: Crawl
+      - name: Crawl & build
         env:
-          BASE_URL: https://billing.dedirock.com
-          MAX_PID: "400"
-          DELAY_MIN: "2.5"
-          DELAY_MAX: "4.0"
           # 可选：如果 CI 出口 IP 被 Cloudflare 拦得太狠，可以在这里塞一个手动取得的 clearance
           CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
         # 无头 Chrome 过不了 CF 的 managed challenge，必须用 xvfb 起有头浏览器
@@ -73,7 +70,7 @@ jobs:
           # 重新对齐到远端最新提交，避免和上一次定时任务的数据 commit 冲突
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --mixed "origin/${GITHUB_REF_NAME}"
-          git add data/products.json docs
+          git add data
           if git diff --cached --quiet; then
             echo "没有变化"
           else
@@ -87,7 +84,7 @@ jobs:
           enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: _site
 
   deploy:
     needs: scrape

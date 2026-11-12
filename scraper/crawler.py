@@ -13,6 +13,7 @@ from typing import Any
 from .cf import get_credentials
 from .fetch import ChallengeError, Fetcher
 from .parse import is_out_of_stock, parse_product
+from .sites import Site
 
 
 def utc_now() -> str:
@@ -22,6 +23,7 @@ def utc_now() -> str:
 @dataclass
 class CrawlStats:
     scanned: int = 0
+    skipped: int = 0
     active: int = 0
     out_of_stock: int = 0
     missing: int = 0
@@ -35,6 +37,7 @@ class CrawlStats:
 class CrawlResult:
     found: dict[str, Any] = field(default_factory=dict)
     out_of_stock: set[str] = field(default_factory=set)
+    missing: set[str] = field(default_factory=set)
     stats: CrawlStats = field(default_factory=CrawlStats)
 
 
@@ -45,47 +48,69 @@ def load_store(path: Path) -> dict[str, Any]:
             return data
     except Exception:
         pass
-    return {"products": {}}
+    return {"products": {}, "missing": []}
+
+
+def _last_known_pid(products: dict[str, Any]) -> int:
+    """最后一个"存在过"的 pid（在售或售罄），用于判断尾部要复查的范围。"""
+    pids = [
+        int(pid)
+        for pid, product in products.items()
+        if product.get("status") in ("active", "out_of_stock")
+    ]
+    return max(pids, default=0)
 
 
 def crawl(
-    base_url: str,
+    site: Site,
     min_pid: int,
     max_pid: int,
     delay_min: float,
     delay_max: float,
     credentials: dict[str, Any],
     cookie_cache: Path,
+    previous: dict[str, Any] | None = None,
 ) -> CrawlResult:
-    fetcher = Fetcher(base_url, credentials)
+    previous = previous or {}
+    fetcher = Fetcher(site.base_url, credentials)
     result = CrawlResult()
     stats = result.stats
 
+    # 上次确认"无产品"的 pid：中间的空洞直接跳过；尾部（最后一个已知 pid 之后）仍然复查
+    previous_missing = {str(pid) for pid in previous.get("missing") or []}
+    last_known = _last_known_pid(previous.get("products") or {})
+    result.missing = set(previous_missing)
+
     for pid in range(min_pid, max_pid + 1):
-        stats.scanned += 1
         key = str(pid)
+        if key in previous_missing and pid < last_known:
+            stats.skipped += 1
+            continue
+
+        stats.scanned += 1
         resp = None
         challenge_retries = 0
+        path = site.crawl_path.format(pid=pid)
 
         while True:
             try:
-                resp = fetcher.get(f"/cart.php?a=add&pid={pid}")
+                resp = fetcher.get(path)
                 break
             except ChallengeError:
                 stats.challenges += 1
                 challenge_retries += 1
                 if challenge_retries > 2:
                     stats.errors += 1
-                    print(f"[{pid}] Cloudflare 验证反复失败，跳过", flush=True)
+                    print(f"[{site.id}:{pid}] Cloudflare 验证反复失败，跳过", flush=True)
                     break
-                print(f"[{pid}] 触发 Cloudflare 验证，重新取 cookie…", flush=True)
+                print(f"[{site.id}:{pid}] 触发 Cloudflare 验证，重新取 cookie…", flush=True)
                 credentials = get_credentials(
-                    base_url, cookie_cache, max_age=0, force=True
+                    site.base_url, cookie_cache, max_age=0, force=True
                 )
                 fetcher.update_credentials(credentials)
             except Exception as exc:  # noqa: BLE001
                 stats.errors += 1
-                print(f"[{pid}] 请求失败: {exc}", flush=True)
+                print(f"[{site.id}:{pid}] 请求失败: {exc}", flush=True)
                 time.sleep(8)
                 break
 
@@ -94,34 +119,38 @@ def crawl(
             continue
 
         product = parse_product(
-            resp.text, pid, f"{base_url.rstrip('/')}/cart.php?a=add&pid={pid}"
+            resp.text,
+            pid,
+            site.base_url.rstrip("/") + site.link_path.format(pid=pid),
+            provider=site.id,
+            provider_name=site.name,
         )
         if product:
             product["status"] = "active"
             product["last_seen"] = utc_now()
-            product["final_url"] = resp.url
             result.found[key] = product
+            result.missing.discard(key)
             price = product.get("price_year")
             price_text = f"${price:,.2f}" if price is not None else "—"
             print(
-                f"[{pid}] ✓ {product['name']}  "
+                f"[{site.id}:{pid}] ✓ {product['name']}  "
                 f"{product['cpu']} / {product['ram']} / {product['disk']} / "
                 f"{product['traffic']} / {price_text}/yr",
                 flush=True,
             )
         elif is_out_of_stock(resp.text):
             result.out_of_stock.add(key)
-            print(f"[{pid}] 售罄", flush=True)
+            result.missing.discard(key)
+            print(f"[{site.id}:{pid}] 售罄", flush=True)
         else:
-            print(f"[{pid}] 无产品", flush=True)
+            result.missing.add(key)
+            print(f"[{site.id}:{pid}] 无产品", flush=True)
 
         time.sleep(random.uniform(delay_min, delay_max))
 
     stats.active = len(result.found)
     stats.out_of_stock = len(result.out_of_stock)
-    stats.missing = max(
-        0, stats.scanned - stats.active - stats.out_of_stock - stats.errors
-    )
+    stats.missing = len(result.missing)
     stats.finished_at = utc_now()
     return result
 
@@ -129,6 +158,7 @@ def crawl(
 def merge_store(
     previous: dict[str, Any],
     result: CrawlResult,
+    site: Site,
 ) -> dict[str, Any]:
     """把本次结果并入历史库：没扫到的旧产品保留数据，只更新状态。"""
     products: dict[str, Any] = dict(previous.get("products", {}))
@@ -146,4 +176,10 @@ def merge_store(
             "out_of_stock" if key in result.out_of_stock else "stale"
         )
 
-    return {"products": products}
+    return {
+        "site": site.id,
+        "name": site.name,
+        "base_url": site.base_url,
+        "products": products,
+        "missing": sorted(int(pid) for pid in result.missing),
+    }
