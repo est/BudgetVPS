@@ -80,6 +80,9 @@ jobs:
           fi
 
       - uses: actions/configure-pages@v5
+        with:
+          # 首次运行自动开启 Pages（Settings → Pages 不用手动点）
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
