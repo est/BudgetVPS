@@ -1,5 +1,7 @@
 # Budget VPS 价格表
 
+**在线页面：<https://est.github.io/BudgetVPS/>**
+
 答案：是的，绝大多数"廉价 VPS 商家"用的都是同一套 **WHMCS** 账单系统（`cart.php?a=add&pid=N`、`clientarea.php`、`index.php/store/...` 这些 URL 就是标志）。所以只要按 `pid` 顺序遍历，就能把整站套餐、配置和价格都扫出来。
 
 这个项目就是干这个的：
@@ -77,9 +79,9 @@ python -m venv .venv
 
 ## 部署到 GitHub Pages
 
-1. 推到 GitHub 后，进入 **Settings → Pages**，把 Source 设为 **GitHub Actions**
-2. 打开 **Actions** 手动跑一次 `Scrape VPS & Deploy Pages`（之后每天 UTC 02:23 自动跑）
-3. 站点地址形如 `https://<user>.github.io/<repo>/`
+1. 推送到 GitHub，工作流会自动开启 Pages（`configure-pages` 的 `enablement: true`），不用手动点 Settings
+2. 打开 **Actions** 可以手动跑一次 `Scrape VPS & Deploy Pages`（之后每天 UTC 02:23 自动跑）
+3. 站点地址形如 `https://<user>.github.io/<repo>/`（本项目是 <https://est.github.io/BudgetVPS/>）
 
 工作流会：
 
