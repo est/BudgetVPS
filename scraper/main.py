@@ -210,13 +210,16 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir)
     build_site(stores, out_dir, Path(args.template))
 
-    active = sum(len(s["products"]) for s in stores)
+    active = sum(
+        1 for s in stores for p in s["products"].values() if p.get("status") == "active"
+    )
+    listed = sum(len(s["products"]) for s in stores)
     oos = sum(s["meta"].get("stats", {}).get("out_of_stock", 0) for s in stores)
     scanned = sum(s["meta"].get("stats", {}).get("scanned", 0) for s in stores)
     skipped = sum(s["meta"].get("stats", {}).get("skipped", 0) for s in stores)
     print(
-        f"[main] 完成：{active} 个在售套餐，{oos} 个售罄，"
-        f"本次请求 {scanned}，跳过 {skipped}，用时 {(time.time() - started) / 60:.1f} 分钟",
+        f"[main] 完成：{active} 个在售套餐（列表共 {listed} 条，含划线的不可用），"
+        f"{oos} 个售罄，本次请求 {scanned}，跳过 {skipped}，用时 {(time.time() - started) / 60:.1f} 分钟",
         flush=True,
     )
     print(f"[main] 输出：{out_dir / 'index.html'}  {out_dir / 'index.md'}", flush=True)

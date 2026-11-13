@@ -51,6 +51,14 @@
   th:hover { color: var(--text); }
   tbody tr:hover { background: #162032; }
   tbody tr:last-child td { border-bottom: 0; }
+  /* 有历史数据但这一轮不可用（售罄 / 下架）：整行删除线，只作提示不参与“在售”统计 */
+  tr.unavail td {
+    color: var(--muted); opacity: .62;
+    text-decoration: line-through; text-decoration-color: rgba(230, 237, 247, .5);
+  }
+  tr.unavail td.name a { color: var(--muted); font-weight: 400; }
+  tr.unavail td.price { color: var(--muted); }
+  tr.unavail:hover { opacity: .85; }
   td.name a { color: var(--text); text-decoration: none; font-weight: 550; }
   td.name a:hover { color: var(--accent); }
   td.name { white-space: normal; max-width: 330px; }
@@ -76,6 +84,7 @@
     <p>{{subtitle}}</p>
     <div class="stats">
       <span class="chip">在售套餐 <b>{{count}}</b></span>
+      <span class="chip">本轮不可用 <b>{{unavailable}}</b></span>
       <span class="chip">售罄 <b>{{out_of_stock}}</b></span>
       <span class="chip">本次扫描 pid <b>{{scanned}}</b></span>
       <span class="chip">跳过已知空洞 <b>{{skipped}}</b></span>
@@ -88,7 +97,7 @@
     <select id="provider" title="按商家筛选">
       <option value="">全部商家</option>{{provider_options}}
     </select>
-    <span class="hint">点表头排序 · 价格优先取年付价，`*` 表示按月付 ×12 估算</span>
+    <span class="hint">点表头排序 · 划删除线 = 有历史数据但本轮不可用（售罄/下架）· 价格优先取年付价，`*` 表示按月付 ×12 估算</span>
   </div>
 
   <div class="tablewrap">

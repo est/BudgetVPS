@@ -12,7 +12,7 @@
 - GitHub Actions 每天定时抓取并部署到 GitHub Pages
 - 多站点：**DediRock**（`billing.dedirock.com`，aff=1033）、**RackNerd**（`my.racknerd.com`，aff=1865）
 
-> 售罄商品 WHMCS 不返回配置和价格，表格里只会保留在售套餐。
+> 售罄商品 WHMCS 不返回配置和价格，所以**有历史数据**的商品即使这一轮售罄（`out_of_stock`）或页面已无产品（`stale`，可能已下架），也不会从表格里删掉，只整行划删除线表示本轮不可用；在售排在前面，划线的排在后面。从来没扫到过数据的 pid 依然不出现。
 
 ## 文件结构
 
@@ -119,7 +119,7 @@ python -m venv .venv
 ## 部署到 GitHub Pages
 
 1. 推送到 GitHub，工作流会自动开启 Pages（`configure-pages` 的 `enablement: true`），不用手动点 Settings
-2. 打开 **Actions** 可以手动跑一次 `Scrape VPS & Deploy Pages`（之后每天 UTC 02:23 自动跑）
+2. 打开 **Actions** 可以手动跑一次 `Scrape VPS & Deploy Pages`（之后每天 UTC 20:00 自动跑）
 3. 站点地址形如 `https://<user>.github.io/<repo>/`（本项目是 <https://est.github.io/BudgetVPS/>）
 
 工作流会：

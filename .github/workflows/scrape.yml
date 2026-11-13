@@ -2,8 +2,8 @@ name: Scrape VPS & Deploy Pages
 
 on:
   schedule:
-    # 每天 UTC 02:23（北京时间 10:23）
-    - cron: "23 2 * * *"
+    # 每天 UTC 20:00（北京时间次日 04:00）
+    - cron: "0 20 * * *"
   workflow_dispatch:
   push:
     branches: [main]

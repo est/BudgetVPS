@@ -41,6 +41,23 @@ def active_products(store: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(items, key=_sort_key)
 
 
+def unavailable_products(store: dict[str, Any]) -> list[dict[str, Any]]:
+    """有历史数据、但这一轮不可用（售罄 / 没抓到，可能已下架）的商品。
+
+    这类商品不再从列表里删掉，只是标记为不可用，渲染时划删除线。
+    """
+    items = [
+        p
+        for p in store.get("products", {}).values()
+        if p.get("status") != "active"
+    ]
+    return sorted(items, key=_sort_key)
+
+
+def _unavailable_label(product: dict[str, Any]) -> str:
+    return "本轮售罄" if product.get("status") == "out_of_stock" else "本轮未抓到，可能已下架"
+
+
 def provider_names(stores: list[dict[str, Any]]) -> dict[str, str]:
     names: dict[str, str] = {}
     for store in stores:
@@ -65,13 +82,16 @@ def render_markdown(products: list[dict[str, Any]], meta: dict[str, Any]) -> str
         f"# {meta.get('title', 'Budget VPS')}",
         "",
         f"> 数据源：{meta.get('sources_text', '')} ｜ 更新：{_display_time(meta.get('updated_at', ''))} ｜ "
-        f"共 {len(products)} 个在售套餐",
+        f"共 {meta.get('count', len(products))} 个在售套餐"
+        f"，{meta.get('unavailable', 0)} 个本轮不可用（已删除线标注）",
         "",
         "| Provider | Name | CPU | RAM | Storage | Traffic | Price (per year) |",
         "| --- | --- | --- | --- | --- | --- | ---: |",
     ]
     for product in products:
         name = str(product["name"]).replace("|", "\\|")
+        if product.get("status") != "active":
+            name = f"~~{name}~~"
         provider = str(product.get("provider_name") or product.get("provider") or "—")
         provider = provider.replace("|", "\\|")
         lines.append(
@@ -106,7 +126,14 @@ def _row(index: int, product: dict[str, Any]) -> str:
     provider_name = html_lib.escape(
         str(product.get("provider_name") or product.get("provider") or "—")
     )
-    return """<tr data-provider="{provider}">
+    unavailable = product.get("status") != "active"
+    row_cls = ' class="unavail"' if unavailable else ""
+    row_title = (
+        ' title="{0}"'.format(html_lib.escape(_unavailable_label(product), quote=True))
+        if unavailable
+        else ""
+    )
+    return """<tr data-provider="{provider}"{row_cls}{row_title}>
         <td class="num">{index}</td>
         <td class="provider"><span class="badge {provider}">{provider_name}</span></td>
         <td class="name"><a href="{url}" target="_blank" rel="noopener">{name}</a></td>
@@ -119,6 +146,8 @@ def _row(index: int, product: dict[str, Any]) -> str:
       </tr>""".format(
         provider=provider,
         provider_name=provider_name,
+        row_cls=row_cls,
+        row_title=row_title,
         index=index,
         url=url,
         name=name,
@@ -139,7 +168,8 @@ def render_html(products: list[dict[str, Any]], meta: dict[str, Any], template: 
     replacements = {
         "title": html_lib.escape(meta.get("title", "Budget VPS")),
         "subtitle": html_lib.escape(meta.get("subtitle", "")),
-        "count": str(len(products)),
+        "count": str(meta.get("count", len(products))),
+        "unavailable": str(meta.get("unavailable", 0)),
         "out_of_stock": str(meta.get("out_of_stock", 0)),
         "scanned": str(meta.get("scanned", 0)),
         "skipped": str(meta.get("skipped", 0)),
@@ -161,9 +191,15 @@ def build_site(
     template_path: Path,
 ) -> list[dict[str, Any]]:
     products: list[dict[str, Any]] = []
+    active: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
     for store in stores:
-        products.extend(active_products(store))
-    products.sort(key=_sort_key)
+        active.extend(active_products(store))
+        unavailable.extend(unavailable_products(store))
+    # 在售排前面，本轮不可用的（删除线）排后面
+    active.sort(key=_sort_key)
+    unavailable.sort(key=_sort_key)
+    products = active + unavailable
 
     names = provider_names(stores)
     counts = provider_counts(stores)
@@ -187,6 +223,8 @@ def build_site(
     )
     meta = {
         "title": "Budget VPS 价格表",
+        "count": len(active),
+        "unavailable": len(unavailable),
         "subtitle": "WHMCS 购物车全量扫描 · " + " / ".join(
             f"{names.get(site, site)} {count}" for site, count in sorted(counts.items())
         ),
