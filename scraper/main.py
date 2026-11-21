@@ -35,8 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--min-pid", type=int, default=int(os.getenv("MIN_PID", "1")))
     parser.add_argument(
-        "--max-pid", type=int, default=int(os.getenv("MAX_PID", "0")),
-        help="结束 pid，0 表示用站点配置的 max_pid",
+        "--max-pid", type=int, default=0,
+        help="结束 pid，0 表示用 MAX_PID / <SITE>_MAX_PID / 站点配置",
     )
     parser.add_argument(
         "--delay-min", type=float,
@@ -83,6 +83,31 @@ def reparse_site(store: dict[str, Any]) -> None:
 
 def _resolve(value: float | None, fallback: float) -> float:
     return value if value is not None else fallback
+
+
+def resolve_max_pid(site: Site, cli_value: int) -> tuple[int, str]:
+    """结束 pid 的来源，返回 (值, 来源说明)。
+
+    优先级：`--max-pid` > `MAX_PID` > `<SITE>_MAX_PID`（按站点）> 站点配置。
+    按站点的环境变量是为了在 GitHub Actions 里单独调某个站的扫描上限，
+    不用因为 racknerd 涨了就把 dedirock 也一起撑大。
+    """
+    if cli_value:
+        return cli_value, "--max-pid"
+
+    for key in ("MAX_PID", f"{site.id.upper()}_MAX_PID"):
+        raw = os.getenv(key, "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"[main] 忽略无效的 {key}={raw!r}", flush=True)
+            continue
+        if value > 0:
+            return value, key
+
+    return site.max_pid, "sites.py"
 
 
 def process_site(
@@ -133,12 +158,12 @@ def process_site(
             force=args.force_solve,
         )
 
-    max_pid = args.max_pid or site.max_pid
+    max_pid, max_pid_src = resolve_max_pid(site, args.max_pid)
     delay_min = _resolve(args.delay_min, site.delay_min)
     delay_max = _resolve(args.delay_max, site.delay_max)
 
     print(
-        f"[main] {site.name}：扫描 pid {args.min_pid}..{max_pid}，"
+        f"[main] {site.name}：扫描 pid {args.min_pid}..{max_pid}（上限来自 {max_pid_src}），"
         f"间隔 {delay_min:.1f}-{delay_max:.1f}s",
         flush=True,
     )

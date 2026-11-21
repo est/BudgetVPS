@@ -76,6 +76,7 @@ python -m venv .venv
 | `--site` | `SITE` | `all` | 站点 id，逗号分隔（`dedirock` / `racknerd`） |
 | `--min-pid` | `MIN_PID` | `1` | 起始 pid |
 | `--max-pid` | `MAX_PID` | `0` | 结束 pid，`0` 表示用站点配置的 `max_pid` |
+| | `<SITE>_MAX_PID` | 站点配置 | 单独覆盖某个站的结束 pid（如 `RACKNERD_MAX_PID`），优先级低于 `MAX_PID` |
 | `--delay-min` | `DELAY_MIN` | 站点配置 | 最小请求间隔（秒） |
 | `--delay-max` | `DELAY_MAX` | 站点配置 | 最大请求间隔（秒） |
 | `--cf-cache-minutes` | `CF_CACHE_MINUTES` | `20` | clearance 复用时长 |
@@ -93,6 +94,10 @@ python -m venv .venv
 - 售罄商品不算空洞，每次都会复查是否补货
 
 想扩大尾部复查范围就调大站点配置的 `max_pid`；新增商品超过 `max_pid` 时记得同步调整。
+懒得改代码的话，在 Actions 里设 `RACKNERD_MAX_PID=1200` 这样的环境变量即可（见上表）。
+
+> RackNerd 的坑：2026 Black Friday 已经用到 `pid=968`，而旧配置 `max_pid=280`，
+> 281~979 整段从来没扫过——不是 pid 跳跃的问题，是上限设小了。
 
 ## 单位口径
 

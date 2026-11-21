@@ -37,7 +37,9 @@ SITES: dict[str, Site] = {
         base_url="https://my.racknerd.com",
         crawl_path="/aff.php?aff=1865&pid={pid}",
         link_path="/aff.php?aff=1865&pid={pid}",
-        max_pid=280,
+        # 2026 Black Friday 已经用到 pid 968-972，旧值 280 会整段漏扫；
+        # 再涨用 RACKNERD_MAX_PID 覆盖，不用改代码
+        max_pid=1000,
         cloudflare=False,
     ),
 }

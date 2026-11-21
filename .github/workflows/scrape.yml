@@ -60,6 +60,8 @@ jobs:
         env:
           # 可选：如果 CI 出口 IP 被 Cloudflare 拦得太狠，可以在这里塞一个手动取得的 clearance
           CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
+          # 可选：单独覆盖某个站的扫描上限（不用改 sites.py）。全局是 MAX_PID
+          # RACKNERD_MAX_PID: "1200"
         # 无头 Chrome 过不了 CF 的 managed challenge，必须用 xvfb 起有头浏览器
         run: xvfb-run -a python -m scraper.main
 
