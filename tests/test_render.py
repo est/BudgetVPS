@@ -113,5 +113,61 @@ class RenderTest(unittest.TestCase):
                          ["cheap-oos"])
 
 
+class SortTest(unittest.TestCase):
+    def test_sort_value_reads_common_formats(self):
+        from scraper.render import sort_value
+
+        self.assertEqual(sort_value("128 GB"), 128)
+        self.assertEqual(sort_value("2.5 GB"), 2.5)
+        self.assertEqual(sort_value("½ GB"), 0.5)
+        self.assertEqual(sort_value("¾ TB"), 0.75)
+        self.assertEqual(sort_value("1½ TB"), 1.5)
+        self.assertEqual(sort_value("2 × 1000 GB SSD"), 2000)
+        self.assertEqual(sort_value(36), 36)
+        self.assertIsNone(sort_value("—"))
+        self.assertIsNone(sort_value("Unmetered"))
+        self.assertIsNone(sort_value(None))
+
+    def test_natural_key_orders_numbers_by_value(self):
+        from scraper.render import natural_key
+
+        names = ["10 GB", "2 GB", "1 GB", "128 GB"]
+        self.assertEqual(
+            sorted(names, key=natural_key), ["1 GB", "2 GB", "10 GB", "128 GB"]
+        )
+        pids = ["1000", "968", "100", "2"]
+        self.assertEqual(
+            sorted(pids, key=natural_key), ["2", "100", "968", "1000"]
+        )
+
+    def test_rows_carry_sort_values(self):
+        from scraper.render import _row
+
+        product = {
+            "pid": 36, "name": "X", "status": "active", "url": "u",
+            "cpu": "1 vCPU", "ram": "½ GB", "disk": "2 × 1000 GB SSD",
+            "traffic": "¾ TB", "price_year": 10.0, "price_estimated": False,
+            "provider": "dedirock", "provider_name": "DediRock",
+        }
+        html = _row(1, product)
+        self.assertIn('data-sort="0.5"', html)      # RAM
+        self.assertIn('data-sort="2000"', html)     # Storage
+        self.assertIn('data-sort="0.75"', html)     # Traffic
+        self.assertIn('data-sort="36"', html)       # PID
+
+    def test_rows_without_value_omit_sort_attr(self):
+        from scraper.render import _row
+
+        product = {
+            "pid": 36, "name": "X", "status": "active", "url": "u",
+            "cpu": "1 vCPU", "ram": "—", "disk": "—", "traffic": "Unmetered",
+            "price_year": None, "price_estimated": False,
+            "provider": "dedirock", "provider_name": "DediRock",
+        }
+        html = _row(1, product)
+        self.assertNotIn('class="ram" data-sort', html)
+        self.assertNotIn('class="traffic" data-sort', html)
+
+
 if __name__ == "__main__":
     unittest.main()

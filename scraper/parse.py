@@ -6,8 +6,11 @@ WHMCS 的 cart.php?a=add&pid=N 大致有三种结果：
   3. 跳转到 /index.php/store/<分类> -> pid 不存在（或已下架）
 
 展示口径：
-  * Storage 一律换算成 GB（1 TB = 1000 GB）
+  * Storage 一律换算成 GB（1 TB = 1000 GB，硬盘厂的十进制标称）
+  * RAM 一律换算成 GB（1024 MB = 1 GB，内存的二进制进位）
+    这样 512 MB / 768 MB / 1024 MB 才能落成 ½ / ¾ / 1，而不是 0.51 / 0.77 / 1.02
   * Traffic 一律换算成 TB，能写成 ¼ ½ ¾ 的就写分数，否则保留两位小数
+  * 分数写法全站统一：能落成 ¼ ½ ¾ 这类的就用 unicode 分数，整数不带小数点（2.0 -> 2）
 """
 
 from __future__ import annotations
@@ -89,6 +92,17 @@ def _to_gb(size: str, unit: str) -> float:
     return value
 
 
+def _to_gb_binary(size: str, unit: str) -> float:
+    """内存用二进制进位：1024 MB = 1 GB。"""
+    value = float(size)
+    unit = unit.upper()
+    if unit == "MB":
+        return value / 1024
+    if unit == "TB":
+        return value * 1024
+    return value
+
+
 def _fraction_text(value: float) -> str | None:
     whole = int(value)
     remainder = value - whole
@@ -100,6 +114,20 @@ def _fraction_text(value: float) -> str | None:
 
 def format_storage(size: str, unit: str) -> str:
     return f"{_fmt_num(_to_gb(size, unit))} GB"
+
+
+def format_ram(size: str, unit: str) -> str:
+    """RAM 统一成 GB。
+
+    * < 1 GB：能落成 ¼ ½ ¾ 这类的用 unicode 分数（512 MB -> ½ GB）
+    * >= 1 GB：保留小数，只把 2.0 这种整数值的尾零去掉（2.0 -> 2，2.5 -> 2.5）
+    """
+    gb = _to_gb_binary(size, unit)
+    if gb < 1:
+        fraction = _fraction_text(gb)
+        if fraction:
+            return f"{fraction} GB"
+    return f"{_fmt_num(gb)} GB"
 
 
 def format_traffic(size: str, unit: str) -> str:
@@ -173,7 +201,7 @@ def parse_cpu(text: str) -> tuple[str, str]:
 def parse_ram(text: str) -> str:
     match = RAM_RE.search(text) or RAM_ALT_RE.search(text)
     if match:
-        return f"{match.group(1)} {match.group(2).upper()}"
+        return format_ram(match.group(1), match.group(2))
     return "—"
 
 

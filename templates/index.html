@@ -108,11 +108,11 @@
           <th>Provider</th>
           <th>Name</th>
           <th>CPU</th>
-          <th>RAM</th>
-          <th>Storage</th>
-          <th>Traffic</th>
+          <th data-type="num">RAM</th>
+          <th data-type="num">Storage</th>
+          <th data-type="num">Traffic</th>
           <th data-type="num">Price / yr</th>
-          <th class="hide-sm">PID</th>
+          <th class="hide-sm" data-type="num">PID</th>
         </tr>
       </thead>
       <tbody>
@@ -164,11 +164,16 @@
         var x = ca.innerText.trim();
         var y = cb.innerText.trim();
         if (numeric) {
-          x = parseFloat(ca.dataset.sort || x.replace(/[^0-9.]/g, '')) || 0;
-          y = parseFloat(cb.dataset.sort || y.replace(/[^0-9.]/g, '')) || 0;
-          return (x - y) * dir;
+          // 缺 data-sort = 没有数值（"—" / "Unmetered"），无论升降都排最后
+          var ka = ca.dataset.sort;
+          var kb = cb.dataset.sort;
+          if (ka === undefined && kb === undefined) return 0;
+          if (ka === undefined) return 1;
+          if (kb === undefined) return -1;
+          return (parseFloat(ka) - parseFloat(kb)) * dir;
         }
-        return x.localeCompare(y, 'en') * dir;
+        // natural sort：让 "2GB" 排在 "10GB" 前面，"pid 2" 排在 "pid 10" 前面
+        return x.localeCompare(y, 'en', { numeric: true, sensitivity: 'base' }) * dir;
       });
       rows.forEach(function (r) { tbody.appendChild(r); });
     });

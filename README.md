@@ -101,9 +101,19 @@ python -m venv .venv
 
 ## 单位口径
 
-- **Storage** 统一换算成 **GB**（`1 TB` → `1000 GB`，`512 MB` → `0.51 GB`），保留介质（SSD / NVMe / HDD）和数量（`2 × 1000 GB SSD`）
+- **RAM** 统一换算成 **GB**，且按**二进制进位**（`1024 MB` → `1 GB`，不是 `1.02 GB`；`512 MB` → `½ GB`、`768 MB` → `¾ GB`）。`< 1 GB` 能落成 `¼ ½ ¾` 这类的用 unicode 分数，`≥ 1 GB` 保留小数、只去掉整数值的尾零（`2.0 GB` → `2 GB`，`2.5 GB` 仍是 `2.5 GB`）
+- **Storage** 统一换算成 **GB**（`1 TB` → `1000 GB`，`512 MB` → `0.51 GB`），保留介质（SSD / NVMe / HDD）和数量（`2 × 1000 GB SSD`）。注意硬盘是十进制标称，所以这里 ÷1000，和 RAM 的 ÷1024 不同
 - **Traffic** 统一换算成 **TB**，能写成分数就用分数（`750 GB` → `¾ TB`、`500 GB` → `½ TB`、`1500 GB` → `1½ TB`），否则保留两位小数（`110 GB` → `0.11 TB`）；`Unmetered` 原样保留
 - **Price(per year)** 优先取 WHMCS 的年付价；只有月付时按 `×12` 估算，页面上用 `*` 标注
+
+## 排序
+
+点表头切换升降序，所有列都按**数值**或**自然序**排，不是字典序：
+
+- **RAM / Storage / Traffic / PID / Price** 走 `data-sort` 数值排序：`½ GB` 排在 `1 GB` 前面，
+  `2 × 1000 GB SSD` 按 `2000` 排而不是按字面的 `2`，`pid 2` 排在 `pid 10` 前面
+- **Name / CPU** 走 natural sort（`localeCompare` 的 `numeric: true`）：`2GB` 排在 `10GB` 前面
+- 没有数值的（`—`、`Unmetered`、缺价格）无论升降序一律排最后，不会被当成 `0` 混进正常数据
 
 ## 添加新站点
 

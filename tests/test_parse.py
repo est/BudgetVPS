@@ -2,6 +2,7 @@ import unittest
 
 from scraper.parse import (
     annual_price,
+    format_ram,
     format_storage,
     format_traffic,
     parse_cycles,
@@ -73,7 +74,7 @@ class ParseProductTest(unittest.TestCase):
                                 provider="racknerd", provider_name="RackNerd")
         assert product is not None
         self.assertEqual(product["cpu"], "2 vCPU")
-        self.assertEqual(product["ram"], "1024 MB")
+        self.assertEqual(product["ram"], "1 GB")
         self.assertEqual(product["disk"], "50 GB SSD")
         self.assertEqual(product["traffic"], "1 TB")
         self.assertEqual(product["price_year"], 215.88)
@@ -133,6 +134,30 @@ class ParseProductTest(unittest.TestCase):
 
 
 class UnitTest(unittest.TestCase):
+    def test_ram_unified_to_gb(self):
+        # 二进制进位：1024 MB = 1 GB，不是 1.02 GB
+        self.assertEqual(format_ram("1024", "MB"), "1 GB")
+        self.assertEqual(format_ram("2048", "MB"), "2 GB")
+        self.assertEqual(format_ram("12288", "MB"), "12 GB")
+        self.assertEqual(format_ram("1", "GB"), "1 GB")
+        self.assertEqual(format_ram("128", "GB"), "128 GB")
+
+    def test_ram_below_one_gb_uses_fractions(self):
+        self.assertEqual(format_ram("512", "MB"), "½ GB")
+        self.assertEqual(format_ram("768", "MB"), "¾ GB")
+        self.assertEqual(format_ram("256", "MB"), "¼ GB")
+        self.assertEqual(format_ram("0.5", "GB"), "½ GB")
+
+    def test_ram_keeps_decimal_at_or_above_one_gb(self):
+        # >=1GB 保留小数，只去掉整数值的尾零
+        self.assertEqual(format_ram("2", "GB"), "2 GB")
+        self.assertEqual(format_ram("2.0", "GB"), "2 GB")
+        self.assertEqual(format_ram("2.5", "GB"), "2.5 GB")
+        self.assertEqual(format_ram("1.5", "GB"), "1.5 GB")
+
+    def test_ram_tb(self):
+        self.assertEqual(format_ram("1", "TB"), "1024 GB")
+
     def test_storage_gb(self):
         self.assertEqual(format_storage("1", "TB"), "1000 GB")
         self.assertEqual(format_storage("2", "TB"), "2000 GB")

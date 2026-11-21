@@ -8,9 +8,55 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# 排序用的分数字面量，和 parse.FRACTIONS 同一套 glyph
+FRACTION_VALUES = {
+    "⅛": 1 / 8,
+    "¼": 1 / 4,
+    "⅓": 1 / 3,
+    "⅜": 3 / 8,
+    "½": 1 / 2,
+    "⅝": 5 / 8,
+    "⅔": 2 / 3,
+    "¾": 3 / 4,
+    "⅞": 7 / 8,
+}
+
+
+def sort_value(text: Any) -> float | None:
+    """把 "128 GB" / "½ TB" / "1½ TB" / "2 × 1000 GB SSD" 变成可比较的数值。
+
+    取不到数值（"—"、"Unmetered"、纯文字）时返回 None，调用方按缺失处理。
+    """
+    s = str(text or "").strip()
+    if not s or s in ("—", "-", "Unmetered"):
+        return None
+    m = re.match(r"(\d+(?:\.\d+)?)\s*[×x]\s*(\d+(?:\.\d+)?)", s)  # 2 × 1000 GB SSD
+    if m:
+        return float(m.group(1)) * float(m.group(2))
+    m = re.match(r"(\d+(?:\.\d+)?)\s*([⅛¼⅓⅜½⅝⅔¾⅞])", s)  # 1½ TB
+    if m:
+        return float(m.group(1)) + FRACTION_VALUES[m.group(2)]
+    m = re.match(r"([⅛¼⅓⅜½⅝⅔¾⅞])", s)  # ½ GB
+    if m:
+        return FRACTION_VALUES[m.group(1)]
+    m = re.match(r"(\d+(?:\.\d+)?)", s)  # 128 GB / 2.5 GB
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def natural_key(value: Any) -> tuple:
+    """字符串里的数字按数值比：'2GB' < '10GB'，而不是字典序。"""
+    parts = re.split(r"(\d+)", str(value))
+    return tuple(
+        (1, int(part), "") if index % 2 else (0, 0, part.lower())
+        for index, part in enumerate(parts)
+    )
 
 
 def _price(value: Any) -> str:
@@ -29,7 +75,11 @@ def _display_time(value: str) -> str:
 
 def _sort_key(product: dict[str, Any]) -> tuple:
     price = product.get("price_year")
-    return (price is None, price if price is not None else 0, product.get("name", ""))
+    return (
+        price is None,
+        price if price is not None else 0,
+        natural_key(product.get("name", "")),
+    )
 
 
 def active_products(store: dict[str, Any]) -> list[dict[str, Any]]:
@@ -117,6 +167,14 @@ def render_markdown(products: list[dict[str, Any]], meta: dict[str, Any]) -> str
     return "\n".join(lines)
 
 
+def _sort_attr(value: Any) -> str:
+    """给单元格加 data-sort="数值"，让 RAM / Storage / Traffic / PID 能按数值排。"""
+    number = sort_value(value)
+    if number is None:
+        return ""
+    return f' data-sort="{number:g}"'
+
+
 def _row(index: int, product: dict[str, Any]) -> str:
     name = html_lib.escape(str(product["name"]))
     url = html_lib.escape(product.get("url", ""), quote=True)
@@ -138,11 +196,11 @@ def _row(index: int, product: dict[str, Any]) -> str:
         <td class="provider"><span class="badge {provider}">{provider_name}</span></td>
         <td class="name"><a href="{url}" target="_blank" rel="noopener">{name}</a></td>
         <td>{cpu}</td>
-        <td>{ram}</td>
-        <td>{disk}</td>
-        <td>{traffic}</td>
-        <td class="price" data-sort="{price_raw}">{price}{marker}</td>
-        <td class="num pid hide-sm">{pid}</td>
+        <td class="ram"{ram_sort}>{ram}</td>
+        <td class="disk"{disk_sort}>{disk}</td>
+        <td class="traffic"{traffic_sort}>{traffic}</td>
+        <td class="price"{price_sort}>{price}{marker}</td>
+        <td class="num pid hide-sm"{pid_sort}>{pid}</td>
       </tr>""".format(
         provider=provider,
         provider_name=provider_name,
@@ -152,13 +210,17 @@ def _row(index: int, product: dict[str, Any]) -> str:
         url=url,
         name=name,
         cpu=html_lib.escape(product.get("cpu", "—")),
-        ram=html_lib.escape(product.get("ram", "—")),
-        disk=html_lib.escape(product.get("disk", "—")),
-        traffic=html_lib.escape(product.get("traffic", "—")),
+        ram=html_lib.escape(str(product.get("ram", "—"))),
+        ram_sort=_sort_attr(product.get("ram")),
+        disk=html_lib.escape(str(product.get("disk", "—"))),
+        disk_sort=_sort_attr(product.get("disk")),
+        traffic=html_lib.escape(str(product.get("traffic", "—"))),
+        traffic_sort=_sort_attr(product.get("traffic")),
         price=_price(price),
-        price_raw=price if price is not None else 0,
+        price_sort=_sort_attr(price),
         marker=marker,
         pid=product.get("pid", ""),
+        pid_sort=_sort_attr(product.get("pid")),
     )
 
 
