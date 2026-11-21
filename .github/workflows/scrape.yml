@@ -25,6 +25,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    # 硬性兜底；真正起作用的是 CRAWL_BUDGET_MINUTES（到点自己收工，数据照样保存）
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +34,23 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      # 上一轮如果被打断（超时 / 跑挂 / 手动取消），进度在 cache 里
+      - name: Restore crawl progress
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: vps-data-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vps-data-
+
+      - name: Keep HEAD version of data for comparison
+        run: |
+          mkdir -p "$RUNNER_TEMP/head"
+          git archive HEAD data | tar -x -C "$RUNNER_TEMP/head" || true
+
+      - name: Prefer the newer data per site
+        run: python -m scraper.restore_cache --cache-dir data --head-dir "$RUNNER_TEMP/head/data"
 
       - name: Install Python deps
         run: pip install -r requirements.txt
@@ -62,10 +80,23 @@ jobs:
           CF_CLEARANCE: ${{ secrets.CF_CLEARANCE }}
           # 可选：单独覆盖某个站的扫描上限（不用改 sites.py）。全局是 MAX_PID
           # RACKNERD_MAX_PID: "1200"
+          # 抓够这么久就收工、保存、下轮接着采（每个站点内部中途也会落盘）
+          CRAWL_BUDGET_MINUTES: "55"
         # 无头 Chrome 过不了 CF 的 managed challenge，必须用 xvfb 起有头浏览器
         run: xvfb-run -a python -m scraper.main
 
+      # 先存 cache 再提交：即便后面的提交步骤失败，进度也不会丢
+      - name: Save crawl progress
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: vps-data-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # 抓取失败/被掐断时也要提交，半程进度就是这么带出去的
       - name: Commit data
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -75,10 +106,27 @@ jobs:
           git add data
           if git diff --cached --quiet; then
             echo "没有变化"
-          else
-            git commit -m "chore: update vps data $(date -u +%F)"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            exit 0
           fi
+          SUMMARY=$(python - <<'PY'
+          import json
+          import pathlib
+
+          path = pathlib.Path("_site/data.json")
+          if not path.exists():
+              print("抓取中断，仅提交已保存的进度")
+          else:
+              data = json.loads(path.read_text())
+              parts = []
+              for site in data.get("sites", []):
+                  stats = site.get("stats") or {}
+                  tail = " · 未采完" if stats.get("incomplete") else ""
+                  parts.append(f"{site.get('name') or site.get('site')} {stats.get('active', 0)} 在售{tail}")
+              print("，".join(parts))
+          PY
+          )
+          git commit -m "chore(data): $(date -u +%F) 抓取结果" -m "$SUMMARY"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - uses: actions/configure-pages@v5
         with:
