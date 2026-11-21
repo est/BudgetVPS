@@ -270,6 +270,16 @@ def build_site(
         f'\n      <span class="chip">{html_lib.escape(names.get(site, site))} <b>{count}</b></span>'
         for site, count in sorted(counts.items())
     )
+    unfinished = [
+        names.get(store["meta"].get("site", ""), store["meta"].get("site", "?"))
+        for store in stores
+        if store.get("meta", {}).get("stats", {}).get("incomplete")
+    ]
+    if unfinished:
+        chips += (
+            '\n      <span class="chip warn" title="到时间预算就先停了，下次自动接着采">'
+            f'本轮未采完 <b>{html_lib.escape("、".join(unfinished))}</b></span>'
+        )
     options = "".join(
         f'\n        <option value="{html_lib.escape(site)}">{html_lib.escape(names.get(site, site))}</option>'
         for site in sorted(counts)

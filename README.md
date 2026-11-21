@@ -22,11 +22,12 @@
 | `templates/index.html` | 页面模板，`{{...}}` 占位符在构建时替换 |
 | `_site/` | 构建产物（`index.html` / `index.md` / `data.json`），**不入库** |
 | `scraper/sites.py` | 站点配置：名称、URL、aff 参数、`max_pid`、是否挂 Cloudflare |
-| `scraper/crawler.py` | pid 扫描、重试、历史合并 |
+| `scraper/crawler.py` | pid 扫描、重试、时间预算、续采游标、历史合并 |
 | `scraper/parse.py` | WHMCS 页面解析、单位换算 |
 | `scraper/store.py` | NDJSON 读写 |
 | `scraper/render.py` | Markdown / HTML / data.json 生成 |
-| `scraper/main.py` | CLI 入口 |
+| `scraper/restore_cache.py` | CI 里比对 Actions cache 与仓库 HEAD 的 data，留新的 |
+| `scraper/main.py` | CLI 入口、并发调度 |
 
 ## 本地运行
 
@@ -34,12 +35,15 @@
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 全量抓取所有站点（默认 2.5-4s 间隔，大约 30-40 分钟）
+# 全量抓取所有站点（不同站点并发；单站 2.5-4s 间隔，最多 50 分钟就收工）
 .venv/bin/python -m scraper.main
 
 # 只抓某个站点 / 小范围试水
 .venv/bin/python -m scraper.main --site racknerd
 .venv/bin/python -m scraper.main --site dedirock --min-pid 1 --max-pid 30 --delay-min 1 --delay-max 2
+
+# 限时 10 分钟，到点保存已采数据，下次接着采
+.venv/bin/python -m scraper.main --budget-minutes 10
 
 # 只重新渲染，不抓取
 .venv/bin/python -m scraper.main --no-crawl
@@ -80,6 +84,7 @@ python -m venv .venv
 | `--delay-min` | `DELAY_MIN` | 站点配置 | 最小请求间隔（秒） |
 | `--delay-max` | `DELAY_MAX` | 站点配置 | 最大请求间隔（秒） |
 | `--cf-cache-minutes` | `CF_CACHE_MINUTES` | `20` | clearance 复用时长 |
+| `--budget-minutes` | `CRAWL_BUDGET_MINUTES` | `50` | 整轮抓取的时间预算，到点收工并保存已采数据，`0` 表示不限时 |
 | | `TRUST_ENV_PROXY` | `0` | 设为 `1` 时沿用环境变量里的 `http(s)_proxy` |
 | `--force-solve` | | | 忽略缓存，强制重新过验证 |
 | `--no-crawl` | | | 只渲染已有数据 |
@@ -98,6 +103,34 @@ python -m venv .venv
 
 > RackNerd 的坑：2026 Black Friday 已经用到 `pid=968`，而旧配置 `max_pid=280`，
 > 281~979 整段从来没扫过——不是 pid 跳跃的问题，是上限设小了。
+
+### 采不完怎么办（时间预算 + 续采）
+
+`max_pid` 调大之后一轮可能扫不完（RackNerd 1..1000 串行要 50+ 分钟），所以有这套机制：
+
+- 到 `--budget-minutes` 就**主动收工**，不是被 CI 掐死：已采到的数据照常合并保存、照样提交，
+  页面照常发布，只是顶栏会多一个「本轮未采完」的提示
+- 每个站点在 `data/<site>.ndjson` 里记一条 `progress`：
+  `{"next_pid": 962, "complete": false, ...}` 表示下次从 962 接着采
+- **采完了**（`complete: true`）下次就从 `min_pid` 重新全量复查一遍，等于保证"最后一定是完整的"
+- 抓取过程中每 25 个 pid 还会**中途落盘**一次，被硬杀也不会丢掉已采的部分
+- 只有**这一轮真正请求过**的 pid 才会被改状态，所以续采不会把没轮到的在售商品误标成下架
+
+### 并发
+
+不同供应商之间是**并发**采集的（一个站点一个线程），各自保持自己的请求间隔，互不影响。
+同一个站点内部仍然是串行的，不会因为并发而加大对单个站点的压力。
+某个站点抛异常不会影响其它站点，已落盘的检查点都还在。
+
+### GitHub Actions 里怎么续采
+
+工作流会：
+
+1. 用 `actions/cache` 把上一轮的 `data/` 恢复出来（`restore-keys: vps-data-` 取最近一次）
+2. 和仓库 HEAD 里的 `data/` **逐站点比 `updated_at`**，留新的那份，避免旧缓存把已提交的数据覆盖回去
+3. 抓取（`CRAWL_BUDGET_MINUTES=55`，作业硬超时 120 分钟只是兜底）
+4. 先 `actions/cache/save` 再提交数据，所以提交步骤挂掉也不会丢进度
+5. 提交消息带上各站在售数量，例如 `chore(data): 2026-11-21 抓取结果` + `DediRock 43 在售，RackNerd 40 在售`
 
 ## 单位口径
 

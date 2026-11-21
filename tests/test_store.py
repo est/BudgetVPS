@@ -33,6 +33,19 @@ class StoreTest(unittest.TestCase):
             store = read_site(Path(tmp) / "nope.ndjson")
         self.assertEqual(store["products"], {})
         self.assertEqual(store["missing"], [])
+        self.assertEqual(store["progress"], {})
+
+    def test_progress_round_trip(self):
+        site = SITES["racknerd"]
+        progress = {"next_pid": 281, "complete": False, "min_pid": 1,
+                    "max_pid": 1000}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "racknerd.ndjson"
+            write_site(path, site, {"scanned": 1}, [], {"7": {"pid": 7}},
+                       "2026-11-12T00:00:00Z", progress)
+            store = read_site(path)
+        self.assertEqual(store["progress"]["next_pid"], 281)
+        self.assertFalse(store["progress"]["complete"])
 
     def test_lines_are_one_object_each(self):
         site = SITES["racknerd"]

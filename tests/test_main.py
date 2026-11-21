@@ -1,9 +1,12 @@
 import os
+import threading
+import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from scraper.main import resolve_max_pid
-from scraper.sites import SITES
+from scraper.main import resolve_max_pid, run_sites
+from scraper.sites import SITES, Site
 
 
 class MaxPidTest(unittest.TestCase):
@@ -47,6 +50,70 @@ class MaxPidTest(unittest.TestCase):
             os.environ.pop("MAX_PID", None)
             value, src = resolve_max_pid(SITES["dedirock"], 0)
         self.assertEqual((value, src), (SITES["dedirock"].max_pid, "sites.py"))
+
+
+def fake_site(name: str) -> Site:
+    return Site(
+        id=name, name=name.upper(), base_url="https://example.com",
+        crawl_path="/p/{pid}", link_path="/l/{pid}", max_pid=10,
+    )
+
+
+class RunSitesTest(unittest.TestCase):
+    def test_different_sites_crawl_concurrently(self):
+        sites = [fake_site(f"s{i}") for i in range(3)]
+        lock = threading.Lock()
+        state = {"active": 0, "peak": 0}
+
+        def fake(site, args, data_dir, deadline=None):
+            with lock:
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            time.sleep(0.05)
+            with lock:
+                state["active"] -= 1
+            return {"meta": {"site": site.id}, "products": {"1": {}}, "missing": []}
+
+        with mock.patch("scraper.main.process_site", fake):
+            stores = run_sites(sites, None, Path("."), None)
+
+        self.assertEqual([s["meta"]["site"] for s in stores], ["s0", "s1", "s2"])
+        self.assertEqual(state["peak"], 3, "三个站点应该同时在跑")
+
+    def test_one_site_failure_does_not_kill_others(self):
+        sites = [fake_site("ok1"), fake_site("bad"), fake_site("ok2")]
+
+        def fake(site, args, data_dir, deadline=None):
+            if site.id == "bad":
+                raise RuntimeError("boom")
+            return {"meta": {"site": site.id}, "products": {"1": {}}, "missing": []}
+
+        with mock.patch("scraper.main.process_site", fake):
+            stores = run_sites(sites, None, Path("."), None)
+
+        self.assertEqual([s["meta"]["site"] for s in stores], ["ok1", "ok2"])
+
+    def test_single_site_runs_without_thread_pool(self):
+        calls = []
+
+        def fake(site, args, data_dir, deadline=None):
+            calls.append(site.id)
+            return {"meta": {"site": site.id}, "products": {"1": {}}, "missing": []}
+
+        with mock.patch("scraper.main.process_site", fake):
+            run_sites([fake_site("only")], None, Path("."), None)
+        self.assertEqual(calls, ["only"])
+
+    def test_deadline_is_passed_through(self):
+        seen = []
+
+        def fake(site, args, data_dir, deadline=None):
+            seen.append(deadline)
+            return {"meta": {"site": site.id}, "products": {"1": {}}, "missing": []}
+
+        with mock.patch("scraper.main.process_site", fake):
+            run_sites([fake_site("a"), fake_site("b")], None, Path("."), 123.0)
+        self.assertEqual(seen, [123.0, 123.0])
 
 
 if __name__ == "__main__":

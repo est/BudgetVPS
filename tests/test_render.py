@@ -96,6 +96,49 @@ class RenderTest(unittest.TestCase):
         self.assertLess(html.index(">36</td>"), html.index(">37</td>"))
         self.assertLess(html.index(">37</td>"), html.index(">38</td>"))
 
+    def test_incomplete_run_shows_a_warning_chip(self):
+        site = SITES["racknerd"]
+        store = {
+            "meta": {
+                "site": "racknerd", "name": "RackNerd", "base_url": "https://x",
+                "updated_at": "2026-11-12T00:00:00Z",
+                "stats": {"scanned": 10, "active": 1, "incomplete": True},
+            },
+            "progress": {"next_pid": 11, "complete": False},
+            "missing": [],
+            "products": {
+                "1": {"pid": 1, "name": "X", "status": "active", "price_year": 9.0,
+                      "provider": "racknerd", "provider_name": "RackNerd", "url": "u"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            build_site([store], out_dir, TEMPLATE)
+            html = (out_dir / "index.html").read_text(encoding="utf-8")
+        self.assertIn("本轮未采完", html)
+        self.assertIn("chip warn", html)
+
+    def test_complete_run_has_no_warning_chip(self):
+        site = SITES["racknerd"]
+        store = {
+            "meta": {
+                "site": "racknerd", "name": "RackNerd", "base_url": "https://x",
+                "updated_at": "2026-11-12T00:00:00Z",
+                "stats": {"scanned": 10, "active": 1, "incomplete": False},
+            },
+            "progress": {"next_pid": 1, "complete": True},
+            "missing": [],
+            "products": {
+                "1": {"pid": 1, "name": "X", "status": "active", "price_year": 9.0,
+                      "provider": "racknerd", "provider_name": "RackNerd", "url": "u"},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            build_site([store], out_dir, TEMPLATE)
+            html = (out_dir / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("本轮未采完", html)
+
     def test_unavailable_sorted_after_active(self):
         from scraper.render import active_products, unavailable_products
 
