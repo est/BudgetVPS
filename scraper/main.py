@@ -163,7 +163,8 @@ def process_site(
 
     credentials = default_credentials()
     cookie_cache = data_dir / f".cookies-{site.id}.json"
-    if site.cloudflare:
+    # feed 主路径不需要 Cloudflare；只有回退 cart 撞到验证时，crawl() 里才会去取 cookie
+    if site.cloudflare and not site.feed:
         with _CRED_LOCK:
             credentials = get_credentials(
                 site.base_url,

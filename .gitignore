@@ -6,3 +6,4 @@ __pycache__/
 data/.cookies*.json
 data/raw/
 _site/
+thirdparty/

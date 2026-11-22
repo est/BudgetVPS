@@ -6,6 +6,7 @@ from scraper.parse import (
     format_storage,
     format_traffic,
     parse_cycles,
+    parse_disk,
     parse_product,
     parse_traffic,
 )
@@ -40,6 +41,22 @@ RACKNERD_PAGE = """
     <option value="quarterly" > $53.97 USD Quarterly </option>
     <option value="semi-annually" > $107.94 USD Semi-Annually </option>
     <option value="annually" > $215.88 USD Annually </option>
+</select>
+"""
+
+
+RACKNERD_BF_PAGE = """
+<div class="product-info">
+    <p class="product-title">1 GB KVM VPS (Black Friday 2026)</p>
+    <p>1 vCPU Core<br />
+20 GB <strong>PURE SSD</strong> RAID-10 Storage<br />
+1 GB RAM<br />
+3000GB <strong>Monthly</strong> Premium Bandwidth<br />
+1Gbps Public Network Port<br />
+Full Root Admin Access</p>
+</div>
+<select name="billingcycle" id="inputBillingcycle" class="form-control">
+    <option value="annually" selected> $15.98 USD Annually </option>
 </select>
 """
 
@@ -79,6 +96,18 @@ class ParseProductTest(unittest.TestCase):
         self.assertEqual(product["traffic"], "1 TB")
         self.assertEqual(product["price_year"], 215.88)
         self.assertFalse(product["price_estimated"])
+
+    def test_racknerd_black_friday_specs(self):
+        product = parse_product(
+            RACKNERD_BF_PAGE, 968, "https://my.racknerd.com/cart.php?a=add&pid=968",
+            provider="racknerd", provider_name="RackNerd",
+        )
+        assert product is not None
+        self.assertEqual(product["cpu"], "1 vCPU")
+        self.assertEqual(product["ram"], "1 GB")
+        self.assertEqual(product["disk"], "20 GB SSD")
+        self.assertEqual(product["traffic"], "3 TB")
+        self.assertEqual(product["price_year"], 15.98)
 
     def test_monthly_only_is_annualized(self):
         html = PAGE.replace('<option value="annually" > $71.88 USD Annually </option>', "")
@@ -181,9 +210,18 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(parse_traffic("10TB Bandwidth"), "10 TB")
         self.assertEqual(parse_traffic("50TB BW"), "50 TB")
         self.assertEqual(parse_traffic("1000GB Premium Bandwidth"), "1 TB")
+        self.assertEqual(parse_traffic("10,000GB Monthly Premium Bandwidth"), "10 TB")
+        self.assertEqual(parse_traffic("20,000GB Monthly Premium Bandwidth"), "20 TB")
         self.assertEqual(parse_traffic("Unmetered Bandwidth"), "Unmetered")
         self.assertEqual(parse_traffic("1Gbps Unmetered"), "Unmetered")
         self.assertEqual(parse_traffic("1 Gbps Network Port"), "—")
+
+    def test_disk_with_modifier_words(self):
+        # RackNerd Black Friday 2026 写法：20 GB PURE SSD RAID-10 Storage
+        self.assertEqual(parse_disk("20 GB PURE SSD RAID-10 Storage"), "20 GB SSD")
+        self.assertEqual(parse_disk("140 GB PURE SSD RAID-10 Storage"), "140 GB SSD")
+        self.assertEqual(parse_disk("1TB SATA HDD"), "1000 GB SATA")
+        self.assertEqual(parse_disk("1 GB RAM"), "—")
 
 
 class ParseCyclesTest(unittest.TestCase):

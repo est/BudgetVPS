@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .cf import get_credentials
+from .feed import (
+    FeedNeedsCart,
+    FeedNoPrice,
+    FeedNotFound,
+    fetch_product as fetch_feed_product,
+)
 from .fetch import ChallengeError, Fetcher
 from .parse import is_out_of_stock, parse_product
 from .sites import Site
@@ -106,11 +112,14 @@ def crawl(
 
     # 上次确认"无产品"的 pid：中间的空洞直接跳过；尾部（最后一个已知 pid 之后）仍然复查
     previous_missing = {str(pid) for pid in previous.get("missing") or []}
+    previous_products = previous.get("products") or {}
     last_known = _last_known_pid(previous.get("products") or {})
     result.missing = set(previous_missing)
 
     start_pid = resume_pid(previous, min_pid, max_pid)
     result.next_pid = start_pid
+    feed_failures = 0
+    feed_disabled = False
     if start_pid > min_pid:
         print(
             f"[main] {site.id}：上一轮没采完，从 pid {start_pid} 继续（到 {max_pid}）",
@@ -137,6 +146,52 @@ def crawl(
             _checkpoint(on_checkpoint, result, site, stats)
 
         stats.scanned += 1
+
+        if site.feed and not feed_disabled:
+            known = key in previous_products
+            try:
+                feed_product = fetch_feed_product(
+                    fetcher, site, pid, previous_products.get(key), known=known
+                )
+            except FeedNotFound:
+                result.visited.add(key)
+                result.next_pid = pid + 1
+                result.missing.add(key)
+                print(f"[{site.id}:{pid}] 无产品（feed）", flush=True)
+                time.sleep(random.uniform(delay_min, delay_max))
+                continue
+            except FeedNeedsCart as exc:
+                print(f"[{site.id}:{pid}] feed 发现新 pid {exc}，用 cart 确认", flush=True)
+            except FeedNoPrice as exc:
+                print(f"[{site.id}:{pid}] feed 无年付/月付价格，回退 cart: {exc}",
+                      flush=True)
+            except Exception as exc:  # noqa: BLE001
+                feed_failures += 1
+                print(f"[{site.id}:{pid}] feed 失败，回退 cart: {exc}", flush=True)
+                if feed_failures >= 3:
+                    feed_disabled = True
+                    print(f"[main] {site.id}：feed 连续失败，本轮改用 cart", flush=True)
+            else:
+                feed_failures = 0
+                result.visited.add(key)
+                result.next_pid = pid + 1
+                feed_product["last_seen"] = utc_now()
+                result.found[key] = feed_product
+                result.missing.discard(key)
+                if feed_product.get("status") == "out_of_stock":
+                    result.out_of_stock.add(key)
+                price = feed_product.get("price_year")
+                price_text = f"${price:,.2f}" if price is not None else "—"
+                print(
+                    f"[{site.id}:{pid}] ✓ {feed_product['name']}  "
+                    f"{feed_product['cpu']} / {feed_product['ram']} / "
+                    f"{feed_product['disk']} / {feed_product['traffic']} / "
+                    f"{price_text}/yr",
+                    flush=True,
+                )
+                time.sleep(random.uniform(delay_min, delay_max))
+                continue
+
         resp = None
         challenge_retries = 0
         path = site.crawl_path.format(pid=pid)
@@ -204,7 +259,9 @@ def crawl(
     if result.complete:
         result.next_pid = min_pid
 
-    stats.active = len(result.found)
+    stats.active = sum(
+        1 for product in result.found.values() if product.get("status") == "active"
+    )
     stats.out_of_stock = len(result.out_of_stock)
     stats.missing = len(result.missing)
     stats.incomplete = not result.complete

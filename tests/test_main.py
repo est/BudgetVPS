@@ -1,11 +1,14 @@
 import os
+import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from scraper.main import resolve_max_pid, run_sites
+from scraper.crawler import CrawlResult
+from scraper.main import process_site, resolve_max_pid, run_sites
 from scraper.sites import SITES, Site
 
 
@@ -57,6 +60,42 @@ def fake_site(name: str) -> Site:
         id=name, name=name.upper(), base_url="https://example.com",
         crawl_path="/p/{pid}", link_path="/l/{pid}", max_pid=10,
     )
+
+
+class FeedCredentialsTest(unittest.TestCase):
+    def _args(self):
+        return mock.Mock(
+            cf_cache_minutes=20,
+            force_solve=False,
+            reparse=False,
+            no_crawl=False,
+            min_pid=1,
+            max_pid=1,
+            delay_min=None,
+            delay_max=None,
+        )
+
+    def test_feed_site_does_not_solve_cloudflare_upfront(self):
+        result = CrawlResult(min_pid=1, max_pid=1)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "scraper.main.get_credentials"
+        ) as credentials, mock.patch(
+            "scraper.main.crawl", return_value=result
+        ):
+            process_site(SITES["dedirock"], self._args(), Path(tmp))
+        credentials.assert_not_called()
+
+    def test_cart_site_still_solves_cloudflare_upfront(self):
+        site = replace(SITES["dedirock"], feed=False)
+        result = CrawlResult(min_pid=1, max_pid=1)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "scraper.main.get_credentials",
+            return_value={"user_agent": "ua", "cookies": {}},
+        ) as credentials, mock.patch(
+            "scraper.main.crawl", return_value=result
+        ):
+            process_site(site, self._args(), Path(tmp))
+        credentials.assert_called_once()
 
 
 class RunSitesTest(unittest.TestCase):

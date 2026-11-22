@@ -1,6 +1,7 @@
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +13,8 @@ from scraper.crawler import (
     resume_pid,
 )
 from scraper.sites import SITES
+
+CART_SITE = replace(SITES["dedirock"], feed=False)
 
 PAGE = """
 <div class="product-info">
@@ -62,7 +65,7 @@ class FakeFetcher:
 
 
 def run_crawl(previous, **kwargs):
-    site = SITES["dedirock"]
+    site = CART_SITE
     with tempfile.TemporaryDirectory() as tmp:
         with mock.patch("scraper.crawler.Fetcher", FakeFetcher), mock.patch(
             "scraper.crawler.time.sleep", lambda _: None
@@ -114,7 +117,7 @@ class BudgetTest(unittest.TestCase):
         ):
             with tempfile.TemporaryDirectory() as tmp:
                 result = crawl(
-                    SITES["dedirock"], 1, 100, 0.0, 0.0,
+                    CART_SITE, 1, 100, 0.0, 0.0,
                     {"user_agent": "ua", "cookies": {}},
                     Path(tmp) / "cookies.json",
                     {},
@@ -172,7 +175,7 @@ class CheckpointTest(unittest.TestCase):
 
 
 class MergeStoreTest(unittest.TestCase):
-    site = SITES["dedirock"]
+    site = CART_SITE
 
     def _result(self, visited):
         result = CrawlResult(min_pid=1, max_pid=10)

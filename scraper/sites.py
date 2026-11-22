@@ -19,6 +19,9 @@ class Site:
     cloudflare: bool = True
     delay_min: float = 2.5
     delay_max: float = 4.0
+    # 优先走 feeds/productsinfo.php；feed 失败再回退 cart.php 的 HTML 解析。
+    # RackNerd 的 /feeds/ 整段被 LiteSpeed 403，保持 False。
+    feed: bool = False
 
 
 SITES: dict[str, Site] = {
@@ -30,6 +33,7 @@ SITES: dict[str, Site] = {
         link_path="/aff.php?aff=1033&pid={pid}",
         max_pid=400,
         cloudflare=True,
+        feed=True,
     ),
     "racknerd": Site(
         id="racknerd",

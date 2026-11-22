@@ -1,11 +1,14 @@
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 from scraper.crawler import crawl
 from scraper.sites import SITES
+
+CART_SITE = replace(SITES["dedirock"], feed=False)
 
 PAGE = """
 <div class="product-info">
@@ -44,7 +47,7 @@ class FakeFetcher:
 
 class SkipTest(unittest.TestCase):
     def test_skip_interior_missing_and_recheck_tail(self):
-        site = SITES["dedirock"]
+        site = CART_SITE
         previous = {
             "missing": sorted(set(range(1, 31)) - {10, 15, 20, 25}),
             "products": {

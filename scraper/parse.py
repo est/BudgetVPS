@@ -5,6 +5,11 @@ WHMCS 的 cart.php?a=add&pid=N 大致有三种结果：
   2. 跳转到 /index.php/store/<分类>/<slug> 且页面带 "Out of Stock" -> 售罄
   3. 跳转到 /index.php/store/<分类> -> pid 不存在（或已下架）
 
+为什么不直接走 WHMCS API：
+  * includes/api.php 的 GetProducts 需要管理员 API key + IP 白名单；
+  * feeds/productsinfo.php?get=description 是公开的，但 racknerd 整个 /feeds/
+    被 LiteSpeed 403（dedirock 可用），所以仍以购物车页 HTML 为准。
+
 展示口径：
   * Storage 一律换算成 GB（1 TB = 1000 GB，硬盘厂的十进制标称）
   * RAM 一律换算成 GB（1024 MB = 1 GB，内存的二进制进位）
@@ -40,7 +45,8 @@ CPU_MODEL_RE = re.compile(
 RAM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB|TB)\s*(?:of\s+)?(?:RAM|DDR\d?)", re.I)
 RAM_ALT_RE = re.compile(r"(?:RAM|DDR\d?)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(GB|MB|TB)", re.I)
 DISK_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(GB|TB|MB)\s*(?:of\s+)?"
+    r"(\d+(?:\.\d+)?)\s*(GB|TB|MB)\s+(?:of\s+)?"
+    r"(?:[A-Za-z][\w-]*\s+){0,4}?"
     r"(SSD|NVME|NVMe|HDD|SAS|SATA|Storage|Disk|Space)\b",
     re.I,
 )
@@ -50,7 +56,7 @@ DISK_MULTI_RE = re.compile(
     re.I,
 )
 TRAFFIC_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(TB|GB|MB)\s+"
+    r"(\d[\d,]*(?:\.\d+)?)\s*(TB|GB|MB)\s+"
     r"(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
     r"(?:Bandwidth|Traffic|Transfer|BW)\b",
     re.I,
@@ -83,7 +89,7 @@ def _fmt_num(value: float) -> str:
 
 
 def _to_gb(size: str, unit: str) -> float:
-    value = float(size)
+    value = float(size.replace(",", ""))
     unit = unit.upper()
     if unit == "MB":
         return value / 1000
@@ -94,7 +100,7 @@ def _to_gb(size: str, unit: str) -> float:
 
 def _to_gb_binary(size: str, unit: str) -> float:
     """内存用二进制进位：1024 MB = 1 GB。"""
-    value = float(size)
+    value = float(size.replace(",", ""))
     unit = unit.upper()
     if unit == "MB":
         return value / 1024
@@ -159,10 +165,24 @@ def parse_product(
     lines = [clean_text(part) for part in re.split(r"<br\s*/?>", body)]
     lines = [line for line in lines if line]
 
+    return build_product(
+        pid, name, lines, parse_cycles(html), url, provider, provider_name
+    )
+
+
+def build_product(
+    pid: int,
+    name: str,
+    specs_lines: list[str],
+    cycles: list[dict[str, Any]],
+    url: str,
+    provider: str = "",
+    provider_name: str = "",
+) -> dict[str, Any]:
+    """用已经拿到的名称 / 规格行 / 计费周期组装成统一的产品结构。"""
     # 有些可配置产品页的 product-info 是空的，规格全写在标题里，这时退回解析标题
-    specs_text = " | ".join(lines) or name
+    specs_text = " | ".join(specs_lines) or name
     cpu, cpu_model = parse_cpu(specs_text)
-    cycles = parse_cycles(html)
     price_year, price_month, cycle_label, estimated = annual_price(cycles)
 
     return {
@@ -181,7 +201,7 @@ def parse_product(
         "price_estimated": estimated,
         "currency": "USD",
         "url": url,
-        "specs_raw": lines,
+        "specs_raw": specs_lines,
     }
 
 

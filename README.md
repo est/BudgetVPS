@@ -23,11 +23,13 @@
 | `_site/` | 构建产物（`index.html` / `index.md` / `data.json`），**不入库** |
 | `scraper/sites.py` | 站点配置：名称、URL、aff 参数、`max_pid`、是否挂 Cloudflare |
 | `scraper/crawler.py` | pid 扫描、重试、时间预算、续采游标、历史合并 |
+| `scraper/feed.py` | DediRock 的 WHMCS 公开 feed 客户端（name / description / price） |
 | `scraper/parse.py` | WHMCS 页面解析、单位换算 |
 | `scraper/store.py` | NDJSON 读写 |
 | `scraper/render.py` | Markdown / HTML / data.json 生成 |
 | `scraper/restore_cache.py` | CI 里比对 Actions cache 与仓库 HEAD 的 data，留新的 |
 | `scraper/main.py` | CLI 入口、并发调度 |
+| `docs/whmcs-notes.md` | WHMCS 抓取经验、接口和坑位记录 |
 
 ## 本地运行
 
@@ -53,6 +55,16 @@ python -m venv .venv
 ```
 
 第一次运行会**弹出一个真实的 Chrome/Edge 窗口**过 Cloudflare 验证（几秒钟），拿到 `cf_clearance` 后写进 `data/.cookies-<site>.json`，后续请求全部走 `curl_cffi`，不再需要浏览器。cookie 默认复用 20 分钟。
+
+### DediRock 的 feed 快路径
+
+DediRock 优先走 WHMCS 公开 feed `feeds/productsinfo.php`，按 pid 取 `name` / `description` / 价格，不需要 Cloudflare：
+
+- 历史库里已有的商品：直接用 feed 更新，`active` / `out_of_stock` 沿用上次状态
+- 新 pid、feed 失败、或只有 quarterly 等其它周期：回退到 `cart.php` 的 HTML 解析
+- 新 pid 必须先回退 cart 确认，因为 feed 里混有 `Retired Product`、隐藏商品等不可订购项
+
+RackNerd 的 `/feeds/` 整段被 LiteSpeed 403，所以仍然只走 cart HTML。
 
 ### Cloudflare 说明
 
