@@ -3,6 +3,8 @@
 记录这套 `cart.php` / `feeds` / API 的实测结论，方便以后接新站点时少踩坑。
 示例主要来自 **DediRock**（`billing.dedirock.com`）和 **RackNerd**（`my.racknerd.com`）。
 
+WHMCS 下载需要登录，绕过：<https://s3.amazonaws.com/releases.whmcs.com/v2/pkgs/whmcs-8.5.1-release.1.zip>
+
 ## 1. 怎么判断一个站点是不是 WHMCS
 
 常见特征：
