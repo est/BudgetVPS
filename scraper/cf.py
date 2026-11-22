@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -183,6 +184,7 @@ def solve(base_url: str, timeout: float = 90.0, headless: bool | None = None) ->
             proc.wait(timeout=10)
         except Exception:
             proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
 
     return {
         "solved_at": int(time.time()),

@@ -1,7 +1,8 @@
 # WHMCS 抓取笔记
 
 记录这套 `cart.php` / `feeds` / API 的实测结论，方便以后接新站点时少踩坑。
-示例主要来自 **DediRock**（`billing.dedirock.com`）和 **RackNerd**（`my.racknerd.com`）。
+示例来自 **DediRock**（`billing.dedirock.com`）、**RackNerd**（`my.racknerd.com`）和
+**Hosteons**（`my.hosteons.com`）。
 
 WHMCS 下载需要登录，绕过：<https://s3.amazonaws.com/releases.whmcs.com/v2/pkgs/whmcs-8.5.1-release.1.zip>
 
@@ -116,6 +117,29 @@ Free Single Monitor. Email only alerts.
 
 这些不一定是标准 VPS 规格，解析不出来时宁可留 `—`，不要瞎猜。
 
+### 4.7 数字写在标签后面
+
+Hosteons 的写法：
+
+```text
+CPU vCore: 1 (Fair Share)
+Dedicated CPU : 8 vCore (Ryzen 5x)
+RAM: 7 GB
+NVME Disk Space: 120 GB
+BANDWIDTH: 7 TB
+```
+
+和 RackNerd / DediRock 的“`20 GB SSD Storage` 数字在前”正好相反，正则要单独覆盖：
+
+- CPU：`(?:v?CPU|v?Core)s?\s*(?:Core|Cores)?\s*[:=]\s*(\d+)`
+- RAM：`(?:RAM|DDR\d?)\s*[:=]?\s*(\d+)\s*(GB|MB|TB)`（原本的 `RAM_ALT_RE` 就够用）
+- Disk：`(SSD|NVME|HDD)\s+(?:Disk|Storage)\s+Space\s*[:=]\s*(\d+)\s*(GB|TB)`
+- Traffic：`(?:Bandwidth|Transfer|Traffic|BW)\s*[:=]\s*(\d+)\s*(TB|GB|MB)`
+
+顺序上“标签在前”的模式要先试，再退回原来的模式；否则 `NVME Disk Space: 120 GB` 会被当成解析不出来。
+
+另外注意产品名里的型号别当成 CPU 型号：Hosteons 的 *RYZEN 7 GB* 是套餐档位，不是 CPU，`ryzen\s+\d{1,2}\s*\w+` 这种宽松写法要排除掉 `GB/TB/MB` 结尾。
+
 ## 5. 公开 feed：`feeds/productsinfo.php`
 
 这是 WHMCS 自带的前台 widget，不需要登录，很多站点也不挂 Cloudflare。
@@ -195,7 +219,7 @@ curl -sS -X POST 'https://site/includes/api.php' \
 ## 7. Cloudflare 相关
 
 - `cart.php`、`index.php?rp=/store/...`、`includes/api.php` 可能在 Cloudflare 后面。
-- `feeds/productsinfo.php` 有时能绕过 Cloudflare（DediRock 可以），有时被源站直接封（RackNerd 是 LiteSpeed 403）。
+- `feeds/productsinfo.php` 有时能绕过 Cloudflare（DediRock 可以），有时被源站直接封（RackNerd 是 LiteSpeed 403），有时整个也挂在 challenge 后面（Hosteons）。
 - `cf_clearance` 与出口 IP、UA 绑定，不能随便复制到别的机器/CI。
 - 本项目用 `curl_cffi` 复用 clearance；需要重新验证时用有头浏览器。
 - 本地环境如果挂了 `https_proxy`，`curl_cffi` 可能自动走代理导致 connection reset；必要时 `trust_env=False` 或临时 `env -u https_proxy`。
@@ -207,6 +231,12 @@ curl -sS -X POST 'https://site/includes/api.php' \
 - 只走 `cart.php` HTML。
 - `/feeds/*` 全 403，没有可用公开接口。
 - 解析规则要兼容 `20 GB PURE SSD RAID-10 Storage`、`10,000GB` 等写法。
+
+### Hosteons
+
+- 整站（含 `/feeds/*`）都在 Cloudflare managed challenge 后面，走 cart HTML + 有头浏览器取 clearance。
+- 规格是“标签在前”：`RAM: 7 GB`、`NVME Disk Space: 120 GB`、`BANDWIDTH: 7 TB`，见 4.7。
+- 实测 `pid` 到 252 就没了（250 以前大多是 store 页 / 售罄），配置里留到 300，涨了用 `HOSTEONS_MAX_PID` 覆盖。
 
 ### DediRock
 

@@ -46,6 +46,17 @@ SITES: dict[str, Site] = {
         max_pid=1000,
         cloudflare=False,
     ),
+    "hosteons": Site(
+        id="hosteons",
+        name="Hosteons",
+        base_url="https://my.hosteons.com",
+        crawl_path="/aff.php?aff=2128&pid={pid}",
+        link_path="/aff.php?aff=2128&pid={pid}",
+        # 整站在 Cloudflare managed challenge 后面（feeds 也一样 403），只能走 cart.php。
+        # 实测 252 之后就没有商品/售罄页了，留点余量；再涨用 HOSTEONS_MAX_PID 覆盖。
+        max_pid=300,
+        cloudflare=True,
+    ),
 }
 
 

@@ -10,7 +10,7 @@
 - 解析 **Name / CPU / RAM / Storage / Traffic / Price(per year)**
 - 生成 Markdown 表格 + 一个可搜索、可排序、可按商家筛选的静态页面
 - GitHub Actions 每天定时抓取并部署到 GitHub Pages
-- 多站点：**DediRock**（`billing.dedirock.com`，aff=1033）、**RackNerd**（`my.racknerd.com`，aff=1865）
+- 多站点：**DediRock**（`billing.dedirock.com`，aff=1033）、**RackNerd**（`my.racknerd.com`，aff=1865）、**Hosteons**（`my.hosteons.com`，aff=2128）
 
 > 售罄商品 WHMCS 不返回配置和价格，所以**有历史数据**的商品即使这一轮售罄（`out_of_stock`）或页面已无产品（`stale`，可能已下架），也不会从表格里删掉，只整行划删除线表示本轮不可用；在售排在前面，划线的排在后面。从来没扫到过数据的 pid 依然不出现。
 >
@@ -68,6 +68,14 @@ DediRock 优先走 WHMCS 公开 feed `feeds/productsinfo.php`，按 pid 取 `nam
 
 RackNerd 的 `/feeds/` 整段被 LiteSpeed 403，所以仍然只走 cart HTML。
 
+### 各站点概览
+
+| 站点 | 地址 | 抓取方式 | Cloudflare |
+| --- | --- | --- | --- |
+| DediRock | `billing.dedirock.com` | feed 为主，cart 兜底 | 有，feed 可绕过 |
+| RackNerd | `my.racknerd.com` | cart HTML | `/feeds/` 源站 403，cart 没有被 CF 挑战 |
+| Hosteons | `my.hosteons.com` | cart HTML | 整站在 CF 后面，feeds 一样 403 |
+
 ### Cloudflare 说明
 
 站点开了 Cloudflare managed challenge：
@@ -91,7 +99,7 @@ RackNerd 的 `/feeds/` 整段被 LiteSpeed 403，所以仍然只走 cart HTML。
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `--site` | `SITE` | `all` | 站点 id，逗号分隔（`dedirock` / `racknerd`） |
+| `--site` | `SITE` | `all` | 站点 id，逗号分隔（`dedirock` / `racknerd` / `hosteons`） |
 | `--min-pid` | `MIN_PID` | `1` | 起始 pid |
 | `--max-pid` | `MAX_PID` | `0` | 结束 pid，`0` 表示用站点配置的 `max_pid` |
 | | `<SITE>_MAX_PID` | 站点配置 | 单独覆盖某个站的结束 pid（如 `RACKNERD_MAX_PID`），优先级低于 `MAX_PID` |
@@ -127,14 +135,16 @@ RackNerd 的 `/feeds/` 整段被 LiteSpeed 403，所以仍然只走 cart HTML。
 - 每个站点在 `data/<site>.ndjson` 里记一条 `progress`：
   `{"next_pid": 962, "complete": false, ...}` 表示下次从 962 接着采
 - **采完了**（`complete: true`）下次就从 `min_pid` 重新全量复查一遍，等于保证"最后一定是完整的"
-- 抓取过程中每 25 个 pid 还会**中途落盘**一次，被硬杀也不会丢掉已采的部分
+- 抓取过程中每 25 个 pid 还会**中途落盘**一次，被硬杀也不会丢掉已采的部分；中途落盘只做加法，不会把旧商品标成下架
 - 只有**这一轮真正请求过**的 pid 才会被改状态，所以续采不会把没轮到的在售商品误标成下架
+- 整轮失败（CF 拦死、一个都没解析出来）就**不写盘**，页面直接用上一轮数据，站点不会从列表消失
 
 ### 并发
 
 不同供应商之间是**并发**采集的（一个站点一个线程），各自保持自己的请求间隔，互不影响。
 同一个站点内部仍然是串行的，不会因为并发而加大对单个站点的压力。
-某个站点抛异常不会影响其它站点，已落盘的检查点都还在。
+某个站点抛异常不影响其它站点；抛异常的那个站点会退回磁盘上的上一轮数据继续渲染，
+已落盘的检查点也都还在。
 
 ### GitHub Actions 里怎么续采
 

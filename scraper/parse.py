@@ -37,8 +37,12 @@ CYCLE_MONTHS = {
 
 CPU_RE = re.compile(r"(\d+)\s*(?:x\s*)?(?:v?cores?|v?cpus?)\b", re.I)
 CPU_GHZ_RE = re.compile(r"(\d+)\s*x\s*[\d.]+\s*GHz", re.I)
+# 有的商家把数字写在标签后面：`CPU vCore: 1 (Fair Share)` / `CPU Core: 4`
+# / `Dedicated CPU : 8 vCore`
+CPU_LABEL_RE = re.compile(r"\b(?:v?CPU|v?Core)s?\s*(?:Core|Cores)?\s*[:=]\s*(\d+)\b", re.I)
 CPU_MODEL_RE = re.compile(
-    r"\b((?:e[35]-\d{4,5}\s?v?\d?|i[3579]-\d{4,5}\w*|ryzen\s+\d{1,2}\s*\w+|epyc\s+\w+"
+    r"\b((?:e[35]-\d{4,5}\s?v?\d?|i[3579]-\d{4,5}\w*"
+    r"|ryzen\s+\d{1,2}\s*(?!(?:GB|TB|MB)\b)\w+|epyc\s+\w+"
     r"|xeon\s+(?:e[35]-\d{4,5}\s*v?\d?|\w+[\w-]*)|apple\s+m\d\w*))\b",
     re.I,
 )
@@ -55,10 +59,22 @@ DISK_MULTI_RE = re.compile(
     r"(SSD|NVME|NVMe|HDD|SAS|SATA)\b",
     re.I,
 )
+# 数字写在标签后面：`NVME Disk Space: 120 GB` / `SSD Disk Space: 15 GB`
+DISK_LABEL_RE = re.compile(
+    r"\b(SSD|NVME|NVMe|HDD|SAS|SATA)\s+(?:Disk|Storage)\s+Space\s*[:=]\s*"
+    r"(\d+(?:\.\d+)?)\s*(GB|TB|MB)\b",
+    re.I,
+)
 TRAFFIC_RE = re.compile(
     r"(\d[\d,]*(?:\.\d+)?)\s*(TB|GB|MB)\s+"
     r"(?:[A-Za-z][A-Za-z-]*\s+){0,3}"
     r"(?:Bandwidth|Traffic|Transfer|BW)\b",
+    re.I,
+)
+# 数字写在标签后面：`BANDWIDTH: 7 TB` / `BANDWIDTH: 6TB`
+TRAFFIC_LABEL_RE = re.compile(
+    r"\b(?:Bandwidth|Transfer|Traffic|BW)\s*[:=]\s*"
+    r"(\d[\d,]*(?:\.\d+)?)\s*(TB|GB|MB)\b",
     re.I,
 )
 TRAFFIC_UNMETERED_RE = re.compile(r"unmetered\b", re.I)
@@ -210,6 +226,9 @@ def parse_cpu(text: str) -> tuple[str, str]:
     model = CPU_MODEL_RE.search(text)
     if cores:
         return f"{cores.group(1)} vCPU", model.group(1) if model else ""
+    labelled = CPU_LABEL_RE.search(text)
+    if labelled:
+        return f"{labelled.group(1)} vCPU", model.group(1) if model else ""
     ghz = CPU_GHZ_RE.search(text)
     if ghz:
         return f"{ghz.group(1)} vCPU", model.group(1) if model else ""
@@ -233,6 +252,11 @@ def parse_disk(text: str) -> str:
         count = multi.group(1)
         prefix = "" if count == "1" else f"{count} × "
         return f"{prefix}{size} {kind}"
+    labelled = DISK_LABEL_RE.search(text)
+    if labelled:
+        kind = labelled.group(1).upper().replace("NVME", "NVMe")
+        size = format_storage(labelled.group(2), labelled.group(3))
+        return f"{size} {kind}".strip()
     match = DISK_RE.search(text)
     if match:
         kind = match.group(3).upper().replace("NVME", "NVMe")
@@ -243,7 +267,7 @@ def parse_disk(text: str) -> str:
 
 
 def parse_traffic(text: str) -> str:
-    match = TRAFFIC_RE.search(text)
+    match = TRAFFIC_LABEL_RE.search(text) or TRAFFIC_RE.search(text)
     if match:
         return format_traffic(match.group(1), match.group(2))
     if TRAFFIC_UNMETERED_RE.search(text):

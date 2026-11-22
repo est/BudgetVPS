@@ -5,6 +5,7 @@ from scraper.parse import (
     format_ram,
     format_storage,
     format_traffic,
+    parse_cpu,
     parse_cycles,
     parse_disk,
     parse_product,
@@ -61,6 +62,61 @@ Full Root Admin Access</p>
 """
 
 
+# Hosteons：数字写在标签后面（`RAM: 7 GB` / `NVME Disk Space: 120 GB` / `BANDWIDTH: 7 TB`）
+HOSTEONS_PAGE = """
+<div class="product-info">
+    <p class="product-title">RYZEN 7 GB</p>
+    <p>RYZEN CPU Core (3.5 Ghz+): 6 vCore (Fair Share)<br />
+RAM: 7 GB<br />
+NVME Disk Space: 120 GB<br />
+OS: Linux/Windows<br />
+IPv4: 1<br />
+IPv6: /64<br />
+BANDWIDTH: 7 TB<br />
+Port Speed: 1 Gbps<br />
+Control Panel: YES</p>
+</div>
+<select name="billingcycle" id="inputBillingcycle" class="form-control">
+    <option value="monthly" selected> $21.00 USD Monthly </option>
+    <option value="annually" > $252.00 USD Annually </option>
+</select>
+"""
+
+
+HOSTEONS_SPECIAL_PAGE = """
+<div class="product-info">
+    <p class="product-title">Special Deal 1 GB KVM SSD Gigabit VPS</p>
+    <p>CPU vCore: 1 (Fair Share)<br />
+RAM: 1GB<br />
+SWAP: 256 MB<br />
+SSD Disk Space: 15 GB<br />
+OS: Linux<br />
+IPv4: 1<br />
+IPv6: /64<br />
+BANDWIDTH: 2 TB<br />
+Snapshopt: 1 Click Backup/ Snapshot Included</p>
+</div>
+<select name="billingcycle" id="inputBillingcycle" class="form-control">
+    <option value="annually" selected> $24.00 USD Annually </option>
+</select>
+"""
+
+
+HOSTEONS_XEON_PAGE = """
+<div class="product-info">
+    <p class="product-title">Dedicated Xeon VPS</p>
+    <p>CPU Core: 4 (Fair Share) (Intel Xeon Gold 6148)<br />
+RAM: 8 GB<br />
+SSD Disk Space: 200 GB<br />
+BANDWIDTH: 10TB<br />
+Port Speed: Gigabit</p>
+</div>
+<select name="billingcycle" id="inputBillingcycle" class="form-control">
+    <option value="annually" selected> $480.00 USD Annually </option>
+</select>
+"""
+
+
 class ParseProductTest(unittest.TestCase):
     def test_basic_fields(self):
         product = parse_product(PAGE, 42, "https://example.com/cart.php?a=add&pid=42")
@@ -108,6 +164,39 @@ class ParseProductTest(unittest.TestCase):
         self.assertEqual(product["disk"], "20 GB SSD")
         self.assertEqual(product["traffic"], "3 TB")
         self.assertEqual(product["price_year"], 15.98)
+
+    def test_hosteons_ryzen_specs(self):
+        product = parse_product(
+            HOSTEONS_PAGE, 127, "https://my.hosteons.com/aff.php?aff=2128&pid=127",
+            provider="hosteons", provider_name="Hosteons",
+        )
+        assert product is not None
+        self.assertEqual(product["name"], "RYZEN 7 GB")
+        self.assertEqual(product["cpu"], "6 vCPU")
+        self.assertEqual(product["ram"], "7 GB")
+        self.assertEqual(product["disk"], "120 GB NVMe")
+        self.assertEqual(product["traffic"], "7 TB")
+        self.assertEqual(product["price_year"], 252.0)
+        self.assertEqual(product["billing_cycle"], "annually")
+
+    def test_hosteons_special_deal_specs(self):
+        product = parse_product(HOSTEONS_SPECIAL_PAGE, 110, "x",
+                                provider="hosteons", provider_name="Hosteons")
+        assert product is not None
+        self.assertEqual(product["cpu"], "1 vCPU")
+        self.assertEqual(product["ram"], "1 GB")
+        self.assertEqual(product["disk"], "15 GB SSD")
+        self.assertEqual(product["traffic"], "2 TB")
+
+    def test_hosteons_labelled_xeon_specs(self):
+        product = parse_product(HOSTEONS_XEON_PAGE, 130, "x",
+                                provider="hosteons", provider_name="Hosteons")
+        assert product is not None
+        self.assertEqual(product["cpu"], "4 vCPU")
+        self.assertEqual(product["cpu_model"], "Xeon Gold")
+        self.assertEqual(product["ram"], "8 GB")
+        self.assertEqual(product["disk"], "200 GB SSD")
+        self.assertEqual(product["traffic"], "10 TB")
 
     def test_monthly_only_is_annualized(self):
         html = PAGE.replace('<option value="annually" > $71.88 USD Annually </option>', "")
@@ -222,6 +311,27 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(parse_disk("140 GB PURE SSD RAID-10 Storage"), "140 GB SSD")
         self.assertEqual(parse_disk("1TB SATA HDD"), "1000 GB SATA")
         self.assertEqual(parse_disk("1 GB RAM"), "—")
+
+    def test_traffic_label_style(self):
+        # Hosteons 写法：数字在标签后面
+        self.assertEqual(parse_traffic("BANDWIDTH: 7 TB"), "7 TB")
+        self.assertEqual(parse_traffic("BANDWIDTH: 6TB"), "6 TB")
+        self.assertEqual(parse_traffic("BANDWIDTH: 500 GB"), "½ TB")
+        self.assertEqual(parse_traffic("Bandwidth: 10,000 GB"), "10 TB")
+        self.assertEqual(parse_traffic("NETWORK: 1Gbps (Shared)"), "—")
+        self.assertEqual(parse_traffic("SWAP: 256 MB"), "—")
+
+    def test_disk_label_style(self):
+        self.assertEqual(parse_disk("NVME Disk Space: 120 GB"), "120 GB NVMe")
+        self.assertEqual(parse_disk("SSD Disk Space: 15 GB"), "15 GB SSD")
+        self.assertEqual(parse_disk("SSD Disk Space: 1 TB"), "1000 GB SSD")
+
+    def test_cpu_label_style(self):
+        self.assertEqual(parse_cpu("CPU vCore: 1 (Fair Share)")[0], "1 vCPU")
+        self.assertEqual(parse_cpu("CPU Core: 4 (Fair Share) (Intel Xeon Gold 6148)")[0], "4 vCPU")
+        self.assertEqual(parse_cpu("Dedicated CPU : 8 vCore (Ryzen 5x)")[0], "8 vCPU")
+        # 数字在前的写法仍然是优先的
+        self.assertEqual(parse_cpu("RYZEN CPU Core (3.5 Ghz+): 6 vCore (Fair Share)")[0], "6 vCPU")
 
 
 class ParseCyclesTest(unittest.TestCase):
