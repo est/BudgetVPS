@@ -87,6 +87,16 @@ RackNerd 的 `/feeds/` 整段被 LiteSpeed 403，所以仍然只走 cart HTML。
 - GitHub Actions 里用 `xvfb-run` 起**有头** Chrome（工作流已经配好）
 - 如果 CI 的机房 IP 被 Cloudflare 重点照顾，可以在仓库 Secrets 里放一个手动取得的 `CF_CLEARANCE`
 
+**不会为了过验证把 IP 送上去**：
+
+- 验证失败要重新取 cookie 时才会起浏览器，而且同一进程里**串行**，两次之间至少隔 30 秒
+  （刚取到的 clearance 又被拒，多半是 IP 被盯上了，再连点只会更糟）
+- 一轮里最多容忍 5 次（`CF_MAX_CHALLENGES` / `--cf-max-challenges`）：到数就**整体跳过这个站点**，
+  停止所有请求，`data/<site>.ndjson` 不写，页面继续用上一轮数据
+- 判断“是不是验证页”只看**标题 + 体积**（`Just a moment...` 且只有几 KB）：Cloudflare 的
+  `challenge-platform` 脚本会注入到**每个**正常页面里，拿关键字扫全文会把好页面当成被拦，
+  结果每个 pid 都去重新过验证（Hosteons 就踩过这个坑）
+
 手动取一次 clearance（输出 JSON）：
 
 ```bash
@@ -106,6 +116,7 @@ RackNerd 的 `/feeds/` 整段被 LiteSpeed 403，所以仍然只走 cart HTML。
 | `--delay-min` | `DELAY_MIN` | 站点配置 | 最小请求间隔（秒） |
 | `--delay-max` | `DELAY_MAX` | 站点配置 | 最大请求间隔（秒） |
 | `--cf-cache-minutes` | `CF_CACHE_MINUTES` | `20` | clearance 复用时长 |
+| `--cf-max-challenges` | `CF_MAX_CHALLENGES` | `5` | 一轮里最多容忍几次 Cloudflare 验证失败，超了整体跳过该站点（`0` = 一失败就跳） |
 | `--budget-minutes` | `CRAWL_BUDGET_MINUTES` | `50` | 整轮抓取的时间预算，到点收工并保存已采数据，`0` 表示不限时 |
 | | `TRUST_ENV_PROXY` | `0` | 设为 `1` 时沿用环境变量里的 `http(s)_proxy` |
 | `--force-solve` | | | 忽略缓存，强制重新过验证 |

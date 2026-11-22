@@ -60,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="cf_clearance 复用时长（分钟）",
     )
     parser.add_argument(
+        "--cf-max-challenges",
+        type=int,
+        default=int(os.getenv("CF_MAX_CHALLENGES", "5")),
+        help="一轮里最多容忍几次 Cloudflare 验证失败，超了就整体跳过该站点（默认 5，0 表示一失败就跳过）",
+    )
+    parser.add_argument(
         "--budget-minutes",
         type=float,
         default=float(os.getenv("CRAWL_BUDGET_MINUTES", "50")),
@@ -227,11 +233,20 @@ def process_site(
             previous=store,
             deadline=deadline,
             on_checkpoint=checkpoint,
+            max_challenges=getattr(args, "cf_max_challenges", 5),
         )
     except Exception as exc:  # noqa: BLE001
         # 过 Cloudflare 失败 / 站点挂掉等等，一律不动已有的数据
         print(
             f"[main] {site.name}：本轮抓取失败（{exc}），保留上一轮数据，站点仍在页面上",
+            flush=True,
+        )
+        return previous_store(site, store)
+
+    if result.aborted or result.stats.cf_abandoned:
+        print(
+            f"[main] {site.name}：Cloudflare 验证一直过不去，本轮整体跳过这个站点"
+            f"（保留上一轮数据，先别再打人家了）",
             flush=True,
         )
         return previous_store(site, store)

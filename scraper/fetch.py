@@ -6,7 +6,7 @@ from typing import Any
 
 from curl_cffi import requests
 
-from .cf import looks_like_challenge
+from .cf import looks_like_challenge, looks_like_challenge_body
 from .config import trust_env_proxy
 
 
@@ -36,10 +36,11 @@ class Fetcher:
     def get(self, path: str, timeout: float = 45.0) -> requests.Response:
         url = path if path.startswith("http") else self.base_url + path
         resp = self.session.get(url, timeout=timeout, allow_redirects=True)
-        # 有时 Cloudflare 用 200 返回验证页，body 里照样是挑战标记；
-        # 这种页面解析不出任何产品，绝不能当成"商品本轮没抓到"。
-        if looks_like_challenge(resp.text):
+        if resp.status_code in (403, 503) and looks_like_challenge(resp.text):
             raise ChallengeError(f"Cloudflare challenge on {url} ({resp.status_code})")
+        # 有时验证页是 200；靠"标题 + 体积"判断，别把正文里带 CF 脚本的正常页面当成被拦
+        if resp.status_code == 200 and looks_like_challenge_body(resp.text):
+            raise ChallengeError(f"Cloudflare challenge on {url} (200)")
         return resp
 
     def update_credentials(self, credentials: dict[str, Any]) -> None:

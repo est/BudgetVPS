@@ -33,6 +33,13 @@ from .fetch import ChallengeError, Fetcher
 from .parse import is_out_of_stock, parse_product
 from .sites import Site
 
+# Cloudflare 相关的止损阈值：
+#   * 一轮里最多容忍几次"重新过验证"，超了就整体跳过这个站点（别把 IP 送上去）
+#   * 两次真的起浏览器之间至少隔这么久：刚取到的 clearance 又被拒，多半是 IP 被盯上了，
+#     再连点浏览器只会更糟
+CF_MAX_CHALLENGES = 5
+CF_SOLVE_COOLDOWN = 30.0
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -53,6 +60,8 @@ class CrawlStats:
     parsed: int = 0
     # 整轮失败：一个成功请求都没有，或者历史商品一个都没能确认
     failed: bool = False
+    # Cloudflare 验证一直过不去，本轮整体放弃了这个站点
+    cf_abandoned: bool = False
     incomplete: bool = False
     started_at: str = field(default_factory=utc_now)
     finished_at: str = ""
@@ -69,6 +78,8 @@ class CrawlResult:
     max_pid: int = 0
     next_pid: int = 1
     complete: bool = True
+    # 被 Cloudflare 挡到放弃，整轮作废（不写盘）
+    aborted: bool = False
 
 
 def load_store(path: Path) -> dict[str, Any]:
@@ -115,6 +126,7 @@ def crawl(
     deadline: float | None = None,
     on_checkpoint: Callable[[CrawlResult], None] | None = None,
     checkpoint_every: int = 25,
+    max_challenges: int = CF_MAX_CHALLENGES,
 ) -> CrawlResult:
     previous = previous or {}
     fetcher = Fetcher(site.base_url, credentials)
@@ -131,6 +143,9 @@ def crawl(
     result.next_pid = start_pid
     feed_failures = 0
     feed_disabled = False
+    cf_abandoned = False
+    # solved_at 是 epoch 秒，用来看"是不是刚取过 cookie"
+    last_solve_at = float(credentials.get("solved_at") or 0)
     if start_pid > min_pid:
         print(
             f"[main] {site.id}：上一轮没采完，从 pid {start_pid} 继续（到 {max_pid}）",
@@ -208,7 +223,6 @@ def crawl(
                 continue
 
         resp = None
-        challenge_retries = 0
         path = site.crawl_path.format(pid=pid)
 
         while True:
@@ -217,21 +231,42 @@ def crawl(
                 break
             except ChallengeError:
                 stats.challenges += 1
-                challenge_retries += 1
-                if challenge_retries > 2:
+                if stats.challenges >= max_challenges:
+                    cf_abandoned = True
                     stats.errors += 1
-                    print(f"[{site.id}:{pid}] Cloudflare 验证反复失败，跳过", flush=True)
+                    print(
+                        f"[{site.id}] Cloudflare 验证已经连续失败 {stats.challenges} 次，"
+                        f"本轮整体跳过该站点（保留上一轮数据，不再继续请求）",
+                        flush=True,
+                    )
                     break
-                print(f"[{site.id}:{pid}] 触发 Cloudflare 验证，重新取 cookie…", flush=True)
+                since_solve = time.time() - last_solve_at
+                if since_solve < CF_SOLVE_COOLDOWN:
+                    stats.errors += 1
+                    print(
+                        f"[{site.id}:{pid}] Cloudflare 验证失败，"
+                        f"{since_solve:.0f}s 前刚取过 cookie，这次不重复起浏览器，跳过",
+                        flush=True,
+                    )
+                    break
+                print(
+                    f"[{site.id}:{pid}] 触发 Cloudflare 验证"
+                    f"（第 {stats.challenges}/{max_challenges} 次），重新取 cookie…",
+                    flush=True,
+                )
                 credentials = get_credentials(
                     site.base_url, cookie_cache, max_age=0, force=True
                 )
                 fetcher.update_credentials(credentials)
+                last_solve_at = time.time()
             except Exception as exc:  # noqa: BLE001
                 stats.errors += 1
                 print(f"[{site.id}:{pid}] 请求失败: {exc}", flush=True)
                 time.sleep(8)
                 break
+
+        if cf_abandoned:
+            break
 
         if resp is None:
             time.sleep(random.uniform(delay_min, delay_max))
@@ -274,6 +309,10 @@ def crawl(
 
         time.sleep(random.uniform(delay_min, delay_max))
 
+    if cf_abandoned:
+        result.aborted = True
+        result.complete = False
+
     if result.complete:
         result.next_pid = min_pid
 
@@ -282,6 +321,7 @@ def crawl(
     )
     stats.out_of_stock = len(result.out_of_stock)
     stats.missing = len(result.missing)
+    stats.cf_abandoned = cf_abandoned
     stats.failed = round_failed(result, previous)
     stats.incomplete = not result.complete
     stats.finished_at = utc_now()
@@ -332,8 +372,13 @@ def round_failed(result: CrawlResult, previous: dict[str, Any]) -> bool:
 
     不判断的话会把这些商品当成"本轮没抓到"，全部标成 stale，页面上只剩一片
     划线。抓失败时宁可不写盘，原样保留上一轮的数据。
+
+    被 Cloudflare 挡到主动放弃（result.aborted）也算失败：那种时候停下来、
+    别继续打人家站点比什么都重要。
     """
     stats = result.stats
+    if result.aborted:
+        return True
     if stats.scanned == 0:
         return False
     if stats.ok == 0:

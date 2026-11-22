@@ -224,6 +224,38 @@ curl -sS -X POST 'https://site/includes/api.php' \
 - 本项目用 `curl_cffi` 复用 clearance；需要重新验证时用有头浏览器。
 - 本地环境如果挂了 `https_proxy`，`curl_cffi` 可能自动走代理导致 connection reset；必要时 `trust_env=False` 或临时 `env -u https_proxy`。
 
+### 7.1 验证失败别硬刚
+
+“过验证”= 起一次浏览器，这是最重的操作，也是最容易被风控盯上的动作。踩过的坑：
+
+- **每个 pid 各重试 3 次**（旧逻辑）意味着一个被拦的站点一轮能开出几百个浏览器窗口——
+  这是在跟 CF 对着干，IP 很容易被重点关注。
+- 现在：一轮里最多容忍 5 次验证失败（`CF_MAX_CHALLENGES`），超了**整体跳过该站点**，
+  不再发任何请求；`data/<site>.ndjson` 不动，页面继续用上一轮数据。
+- 两次真的起浏览器之间至少隔 30 秒（`CF_SOLVE_COOLDOWN`）。刚取到的 clearance 又立刻被拒，
+  说明不是 cookie 的问题，再取一次也没用。
+- 同一进程内浏览器验证**串行**（`cf.SOLVE_LOCK`），多站点并发时不会同时开两个浏览器。
+- `cf_clearance` 通常能撑很久（实测 30 分钟后仍然有效），所以一轮里基本不需要反复取。
+- `probe_direct` 直接通时返回的 credentials **不带 solved_at**：这时并没有真的取过 cookie，
+  后面万一撞验证要允许立刻起浏览器，别被冷却时间挡住。
+
+### 7.2 别拿关键字扫全文判断“是不是验证页”
+
+真实事故：为了拦住 200 的验证页，一开始写成“body 里出现 `challenge-platform` 就算被拦”，
+结果 **Hosteons 的每个正常商品页都被判成验证页**（那串 CF 脚本藏在第 83089 字节处，
+正常页面里本来就有），于是每个 pid 都去“重新过验证” → 大量浏览器窗口 → IP 被关注。
+症状就是“hosteons 经常触发 cf 验证失败”。
+
+正确做法：
+
+- 403/503：可以用宽泛标记（`Just a moment`、`Attention Required`、`challenge-platform`），
+  这个状态码下的 body 本来就是验证页
+- 200：只看 **标题是 `Just a moment...`** 且 **整页只有几 KB**（正常商品页 60KB 起，
+  标题是 `Shopping Cart - xxx`）
+
+顺带一个好消息：Hosteons 用 `curl_cffi`（chrome131）其实**经常不用 clearance 就能拿到正常页面**，
+`probe_direct` 一般直接通过，验证页只是偶尔出现，所以这个站点不需要频繁过验证。
+
 ## 8. 本项目的抓取策略
 
 ### RackNerd
@@ -234,9 +266,12 @@ curl -sS -X POST 'https://site/includes/api.php' \
 
 ### Hosteons
 
-- 整站（含 `/feeds/*`）都在 Cloudflare managed challenge 后面，走 cart HTML + 有头浏览器取 clearance。
+- 整站（含 `/feeds/*`）都在 Cloudflare managed challenge 后面，走 cart HTML。
+- 不过 `curl_cffi`（chrome131）通常**不用 clearance 就能直接拿到正常页面**，`probe_direct` 一般直接过；
+  偶尔才撞到验证页，那时才起浏览器。详见 7.2。
 - 规格是“标签在前”：`RAM: 7 GB`、`NVME Disk Space: 120 GB`、`BANDWIDTH: 7 TB`，见 4.7。
 - 实测 `pid` 到 252 就没了（250 以前大多是 store 页 / 售罄），配置里留到 300，涨了用 `HOSTEONS_MAX_PID` 覆盖。
+- 验证失败按 7.1 处理：最多 5 次，超了整体跳过，别把 IP 送上去。
 
 ### DediRock
 

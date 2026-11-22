@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,14 @@ CHALLENGE_MARKERS = (
     "challenge-platform",
     "Attention Required",
 )
+
+# 200 也可能是验证页（少见）。这里不能只看 body 里有没有 _cf_chl_opt /
+# challenge-platform —— Cloudflare 会把脚本注入到**每个**正常页面里
+# （Hosteons 的商品页第 83089 字节处就有 challenge-platform），
+# 只能靠"标题是 Just a moment + 整页只有几 KB"来认。
+CHALLENGE_MAX_BYTES = 20000
+CHALLENGE_TITLES = ("just a moment", "attention required")
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -47,10 +57,28 @@ BROWSER_CANDIDATES = (
     "/usr/bin/microsoft-edge",
 )
 
+# 起浏览器是重活，而且短时间连点很容易被 Cloudflare 盯上：
+# 多个站点并发采集时，同一进程里串行过一次验证就够了。
+SOLVE_LOCK = threading.Lock()
+
 
 def looks_like_challenge(html: str) -> bool:
     head = html[:6000]
     return any(marker in head for marker in CHALLENGE_MARKERS)
+
+
+def looks_like_challenge_body(html: str) -> bool:
+    """HTTP 200 的响应里判断是不是 Cloudflare 验证页。
+
+    验证页的特征：标题是 `Just a moment...`，整页只有几 KB。正常商品页
+    60KB 起，标题是 `Shopping Cart - xxx`，而且 **body 里也会有**
+    `challenge-platform`（CF 注入的脚本），所以不能用关键词扫全文。
+    """
+    match = _TITLE_RE.search(html[:4000])
+    title = match.group(1).strip().lower() if match else ""
+    if any(marker in title for marker in CHALLENGE_TITLES):
+        return True
+    return len(html) < CHALLENGE_MAX_BYTES and "challenge-platform" in html
 
 
 def find_browser() -> str | None:
@@ -260,13 +288,16 @@ def get_credentials(
         if probe_direct(base_url):
             print("[cf] 直接请求就通了，不需要浏览器", flush=True)
             return {
-                "solved_at": int(time.time()),
+                # 这里没真的取过 cookie，solved_at 留 0：
+                # 万一后面还是撞验证，应该马上允许起浏览器，而不是被冷却时间挡住
+                "solved_at": 0,
                 "user_agent": DEFAULT_UA,
                 "cookies": {},
             }
 
     print("[cf] 正在用浏览器过 Cloudflare 验证…", flush=True)
-    creds = solve(base_url)
+    with SOLVE_LOCK:
+        creds = solve(base_url)
     save_credentials(cache_path, creds)
     print(f"[cf] 验证通过，拿到 {len(creds['cookies'])} 个 cookie", flush=True)
     return creds

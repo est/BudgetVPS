@@ -12,6 +12,7 @@ from scraper.crawler import (
     merge_store,
     resume_pid,
 )
+from scraper.fetch import ChallengeError
 from scraper.sites import SITES
 
 CART_SITE = replace(SITES["dedirock"], feed=False)
@@ -261,6 +262,35 @@ class BlankFetcher:
         pass
 
 
+class ChallengeFetcher:
+    """每个请求都撞 Cloudflare 验证。"""
+
+    def __init__(self, base_url: str, credentials: dict) -> None:
+        pass
+
+    def get(self, path: str, timeout: float = 45.0):
+        raise ChallengeError(f"Cloudflare challenge on {path} (403)")
+
+    def update_credentials(self, credentials: dict) -> None:
+        pass
+
+
+class OneShotChallengeFetcher:
+    """第一个请求撞验证，之后就正常。"""
+
+    def __init__(self, base_url: str, credentials: dict) -> None:
+        self.challenges = 0
+
+    def get(self, path: str, timeout: float = 45.0):
+        if self.challenges == 0:
+            self.challenges += 1
+            raise ChallengeError("Cloudflare challenge on first request")
+        return FakeResponse(PAGE)
+
+    def update_credentials(self, credentials: dict) -> None:
+        pass
+
+
 HISTORY = {
     "products": {
         "2": {"pid": 2, "status": "active", "name": "在售 A"},
@@ -269,6 +299,73 @@ HISTORY = {
     "missing": [7, 8],
     "progress": {"next_pid": 1, "complete": True, "min_pid": 1, "max_pid": 10},
 }
+
+
+class CloudflareBudgetTest(unittest.TestCase):
+    """Cloudflare 验证不能无限重试：超了就整体跳过站点。"""
+
+    site = CART_SITE
+
+    def _crawl(self, fetcher, previous=None, max_challenges=5, credentials=None):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "scraper.crawler.Fetcher", fetcher
+        ), mock.patch(
+            "scraper.crawler.get_credentials",
+            return_value={"user_agent": "ua", "cookies": {}, "solved_at": 0},
+        ) as solve, mock.patch(
+            "scraper.crawler.time.sleep", lambda _: None
+        ), mock.patch("scraper.crawler.random.uniform", lambda _a, _b: 0.0):
+            result = crawl(
+                self.site, 1, 10, 0.0, 0.0,
+                credentials or {"user_agent": "ua", "cookies": {}},
+                Path(tmp) / "cookies.json",
+                previous or {},
+                max_challenges=max_challenges,
+            )
+        return result, solve
+
+    def test_gives_up_on_site_after_max_challenges(self):
+        result, solve = self._crawl(ChallengeFetcher)
+        self.assertTrue(result.aborted)
+        self.assertTrue(result.stats.cf_abandoned)
+        self.assertTrue(result.stats.failed)
+        self.assertEqual(result.stats.challenges, 5)
+        # 没有把 10 个 pid 全部走完，被拦到第 5 次就停了
+        self.assertLessEqual(result.stats.scanned, 5)
+        # 而且没有连点浏览器：短时间内最多只起一次（CF_SOLVE_COOLDOWN）
+        self.assertEqual(solve.call_count, 1)
+
+    def test_custom_threshold(self):
+        result, _ = self._crawl(ChallengeFetcher, max_challenges=2)
+        self.assertEqual(result.stats.challenges, 2)
+        self.assertTrue(result.aborted)
+
+    def test_aborted_round_keeps_previous_data(self):
+        previous = {
+            "products": {"2": {"pid": 2, "status": "active", "name": "旧"}},
+            "missing": [7],
+            "progress": {"next_pid": 1, "complete": True, "min_pid": 1, "max_pid": 10},
+        }
+        result, _ = self._crawl(ChallengeFetcher, previous=previous)
+        merged = merge_store(previous, result, self.site)
+        self.assertTrue(merged["failed"])
+        self.assertEqual(merged["products"], {"2": {"pid": 2, "status": "active", "name": "旧"}})
+        self.assertEqual(merged["missing"], [7])
+
+    def test_single_challenge_then_ok_keeps_going(self):
+        result, solve = self._crawl(OneShotChallengeFetcher)
+        self.assertFalse(result.aborted)
+        self.assertEqual(result.stats.challenges, 1)
+        self.assertEqual(len(result.found), 10)
+        self.assertEqual(solve.call_count, 1)
+
+    def test_recent_clearance_is_not_re_solved(self):
+        # 刚取到的 cookie 又被拒：不要连点浏览器，直接跳过这个 pid
+        result, solve = self._crawl(
+            ChallengeFetcher,
+            credentials={"user_agent": "ua", "cookies": {}, "solved_at": 9.9e9},
+        )
+        self.assertEqual(solve.call_count, 0)
 
 
 class FailedRoundTest(unittest.TestCase):
