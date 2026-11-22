@@ -5,6 +5,11 @@
   * 每个站点在 ndjson 里记一条 progress（下次从哪个 pid 继续 / 这一轮采完没有）
   * merge_store() 只更新**这一轮真正请求过**的 pid 状态，半途中断不会把没扫到的
     商品误标成 stale
+
+抓取失败时不动历史数据：
+  * 一轮里一个成功请求都没有，或者历史里有在售商品却一个都没解析出来，视为失败
+    （round_failed），merge_store() 原样返回上一轮的数据
+  * 中途落盘（mark_stale=False）只做加法，绝不会把旧商品标成 stale
 """
 
 from __future__ import annotations
@@ -42,6 +47,12 @@ class CrawlStats:
     missing: int = 0
     errors: int = 0
     challenges: int = 0
+    # 这一轮真正拿到响应的次数（cart 页面 / feed 字段都算）
+    ok: int = 0
+    # 拿到"确定答案"的次数：解析出产品、判定售罄、或 feed 明确说没有
+    parsed: int = 0
+    # 整轮失败：一个成功请求都没有，或者历史商品一个都没能确认
+    failed: bool = False
     incomplete: bool = False
     started_at: str = field(default_factory=utc_now)
     finished_at: str = ""
@@ -154,6 +165,8 @@ def crawl(
                     fetcher, site, pid, previous_products.get(key), known=known
                 )
             except FeedNotFound:
+                stats.ok += 1
+                stats.parsed += 1
                 result.visited.add(key)
                 result.next_pid = pid + 1
                 result.missing.add(key)
@@ -173,6 +186,8 @@ def crawl(
                     print(f"[main] {site.id}：feed 连续失败，本轮改用 cart", flush=True)
             else:
                 feed_failures = 0
+                stats.ok += 1
+                stats.parsed += 1
                 result.visited.add(key)
                 result.next_pid = pid + 1
                 feed_product["last_seen"] = utc_now()
@@ -225,6 +240,7 @@ def crawl(
         # 请求成功（无论有没有商品）都算"这一轮看过"，merge 时才敢改状态
         result.visited.add(key)
         result.next_pid = pid + 1
+        stats.ok += 1
 
         product = parse_product(
             resp.text,
@@ -234,6 +250,7 @@ def crawl(
             provider_name=site.name,
         )
         if product:
+            stats.parsed += 1
             product["status"] = "active"
             product["last_seen"] = utc_now()
             result.found[key] = product
@@ -247,6 +264,7 @@ def crawl(
                 flush=True,
             )
         elif is_out_of_stock(resp.text):
+            stats.parsed += 1
             result.out_of_stock.add(key)
             result.missing.discard(key)
             print(f"[{site.id}:{pid}] 售罄", flush=True)
@@ -264,6 +282,7 @@ def crawl(
     )
     stats.out_of_stock = len(result.out_of_stock)
     stats.missing = len(result.missing)
+    stats.failed = round_failed(result, previous)
     stats.incomplete = not result.complete
     stats.finished_at = utc_now()
 
@@ -302,16 +321,57 @@ def build_progress(result: CrawlResult) -> dict[str, Any]:
     }
 
 
+def round_failed(result: CrawlResult, previous: dict[str, Any]) -> bool:
+    """判断这一轮是不是"白跑了"。
+
+    两种情况：
+
+    * 一个成功请求都没有（Cloudflare 拦死、站点挂了、网络不通）
+    * 历史库里本来有在售商品，这一轮却一个都没能确认（解析不出任何产品 /
+      售罄，多半是被反爬塞了别的页面）
+
+    不判断的话会把这些商品当成"本轮没抓到"，全部标成 stale，页面上只剩一片
+    划线。抓失败时宁可不写盘，原样保留上一轮的数据。
+    """
+    stats = result.stats
+    if stats.scanned == 0:
+        return False
+    if stats.ok == 0:
+        return True
+    had_active = any(
+        product.get("status") == "active"
+        for product in (previous.get("products") or {}).values()
+    )
+    return had_active and stats.parsed == 0
+
+
 def merge_store(
     previous: dict[str, Any],
     result: CrawlResult,
     site: Site,
+    mark_stale: bool = True,
 ) -> dict[str, Any]:
     """把本次结果并入历史库：没扫到的旧产品保留数据，只更新状态。
 
     只有 result.visited 里的 pid（这一轮真请求过的）才允许改状态，
     这样采到一半中断/续采时，没轮到的商品不会被误标成 stale。
+
+    `mark_stale=False` 时只做"加法"：只把新抓到的商品写进去，绝不把任何
+    商品标成 stale / out_of_stock。中途落盘用这个，抓挂了也不会改动旧数据。
+
+    整轮失败（round_failed）时无论 mark_stale 与否都原样返回上一轮的数据。
     """
+    if round_failed(result, previous):
+        return {
+            "site": site.id,
+            "name": site.name,
+            "base_url": site.base_url,
+            "products": dict(previous.get("products", {})),
+            "missing": sorted(int(pid) for pid in (previous.get("missing") or [])),
+            "progress": previous.get("progress") or {},
+            "failed": True,
+        }
+
     products: dict[str, Any] = dict(previous.get("products", {}))
     now = utc_now()
 
@@ -320,12 +380,13 @@ def merge_store(
         product.setdefault("first_seen", old.get("first_seen", now))
         products[key] = product
 
-    for key, product in products.items():
-        if key in result.found or key not in result.visited:
-            continue
-        product["status"] = (
-            "out_of_stock" if key in result.out_of_stock else "stale"
-        )
+    if mark_stale:
+        for key, product in products.items():
+            if key in result.found or key not in result.visited:
+                continue
+            product["status"] = (
+                "out_of_stock" if key in result.out_of_stock else "stale"
+            )
 
     return {
         "site": site.id,
@@ -334,4 +395,5 @@ def merge_store(
         "products": products,
         "missing": sorted(int(pid) for pid in result.missing),
         "progress": build_progress(result),
+        "failed": False,
     }

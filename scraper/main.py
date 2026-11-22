@@ -121,6 +121,23 @@ def resolve_max_pid(site: Site, cli_value: int) -> tuple[int, str]:
     return site.max_pid, "sites.py"
 
 
+def previous_store(site: Site, store: dict[str, Any]) -> dict[str, Any]:
+    """抓取失败时的兜底视图：直接用磁盘上的老数据。
+
+    这样站点不会因为一次抓取失败就从页面上消失，旧商品（含售罄 / stale）
+    的状态也原样保留。
+    """
+    meta = dict(store.get("meta") or {})
+    meta.update({"site": site.id, "name": site.name, "base_url": site.base_url})
+    if not meta.get("updated_at"):
+        meta["updated_at"] = utc_now()
+    return {
+        "meta": meta,
+        "missing": list(store.get("missing") or []),
+        "products": dict(store.get("products") or {}),
+    }
+
+
 def process_site(
     site: Site,
     args: argparse.Namespace,
@@ -163,15 +180,6 @@ def process_site(
 
     credentials = default_credentials()
     cookie_cache = data_dir / f".cookies-{site.id}.json"
-    # feed 主路径不需要 Cloudflare；只有回退 cart 撞到验证时，crawl() 里才会去取 cookie
-    if site.cloudflare and not site.feed:
-        with _CRED_LOCK:
-            credentials = get_credentials(
-                site.base_url,
-                cookie_cache,
-                max_age=args.cf_cache_minutes * 60,
-                force=args.force_solve,
-            )
 
     max_pid, max_pid_src = resolve_max_pid(site, args.max_pid)
     delay_min = _resolve(args.delay_min, site.delay_min)
@@ -184,25 +192,59 @@ def process_site(
     )
 
     def checkpoint(result) -> None:
-        """中途落盘：被打断时磁盘上已经是最新进度。"""
-        partial = merge_store(store, result, site)
+        """中途落盘：被打断时磁盘上已经是最新进度。
+
+        只做加法（mark_stale=False），不把任何旧商品标成 stale；一个成功请求都
+        没拿到时干脆不写，免得把上一轮的数据改坏。
+        """
+        if result.stats.ok == 0:
+            return
+        partial = merge_store(store, result, site, mark_stale=False)
         write_site(
             path, site, result.stats.__dict__,
             partial["missing"], partial["products"], utc_now(), partial["progress"],
         )
 
-    result = crawl(
-        site=site,
-        min_pid=args.min_pid,
-        max_pid=max_pid,
-        delay_min=delay_min,
-        delay_max=delay_max,
-        credentials=credentials,
-        cookie_cache=cookie_cache,
-        previous=store,
-        deadline=deadline,
-        on_checkpoint=checkpoint,
-    )
+    try:
+        # feed 主路径不需要 Cloudflare；只有回退 cart 撞到验证时，crawl() 里才会去取 cookie
+        if site.cloudflare and not site.feed:
+            with _CRED_LOCK:
+                credentials = get_credentials(
+                    site.base_url,
+                    cookie_cache,
+                    max_age=args.cf_cache_minutes * 60,
+                    force=args.force_solve,
+                )
+
+        result = crawl(
+            site=site,
+            min_pid=args.min_pid,
+            max_pid=max_pid,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            credentials=credentials,
+            cookie_cache=cookie_cache,
+            previous=store,
+            deadline=deadline,
+            on_checkpoint=checkpoint,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 过 Cloudflare 失败 / 站点挂掉等等，一律不动已有的数据
+        print(
+            f"[main] {site.name}：本轮抓取失败（{exc}），保留上一轮数据，站点仍在页面上",
+            flush=True,
+        )
+        return previous_store(site, store)
+
+    if result.stats.failed:
+        print(
+            f"[main] {site.name}：本轮没有抓到任何有效数据"
+            f"（请求 {result.stats.scanned}，成功响应 {result.stats.ok}），"
+            f"保留上一轮数据不动",
+            flush=True,
+        )
+        return previous_store(site, store)
+
     merged = merge_store(store, result, site)
     stats = result.stats.__dict__
     updated_at = stats["finished_at"] or utc_now()
@@ -264,6 +306,10 @@ def run_sites(
             except Exception as exc:  # noqa: BLE001
                 # 一个站点失败不影响别的站点；已落盘的检查点都还在
                 print(f"[main] {site.id} 抓取异常（其它站点继续）: {exc}", flush=True)
+                fallback = previous_store(site, read_site(data_dir / f"{site.id}.ndjson"))
+                if fallback["products"]:
+                    print(f"[main] {site.id}：改用磁盘上的上一轮数据渲染", flush=True)
+                    done[site.id] = fallback
     return [done[site.id] for site in sites if site.id in done]
 
 

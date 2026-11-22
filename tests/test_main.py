@@ -10,6 +10,7 @@ from unittest import mock
 from scraper.crawler import CrawlResult
 from scraper.main import process_site, resolve_max_pid, run_sites
 from scraper.sites import SITES, Site
+from scraper.store import write_site
 
 
 class MaxPidTest(unittest.TestCase):
@@ -98,6 +99,98 @@ class FeedCredentialsTest(unittest.TestCase):
         credentials.assert_called_once()
 
 
+class FailedCrawlKeepsDataTest(unittest.TestCase):
+    """抓取失败时，磁盘上的老数据和商品状态都要原样保留。"""
+
+    site = SITES["dedirock"]
+    HISTORY = {
+        "2": {"pid": 2, "status": "active", "name": "在售 A", "price_year": 10.0},
+        "5": {"pid": 5, "status": "stale", "name": "已下架 B", "price_year": 20.0},
+    }
+
+    def _args(self):
+        return mock.Mock(
+            cf_cache_minutes=20,
+            force_solve=False,
+            reparse=False,
+            no_crawl=False,
+            min_pid=1,
+            max_pid=0,
+            delay_min=None,
+            delay_max=None,
+        )
+
+    def _seed(self, path: Path) -> str:
+        write_site(
+            path, self.site, {"active": 1}, {7, 8}, dict(self.HISTORY),
+            "2026-11-01T00:00:00Z",
+            {"next_pid": 1, "complete": True, "min_pid": 1, "max_pid": 400},
+        )
+        return path.read_text(encoding="utf-8")
+
+    def _failed_result(self) -> CrawlResult:
+        result = CrawlResult(min_pid=1, max_pid=400)
+        result.stats.scanned = 10
+        result.stats.ok = 0
+        result.stats.failed = True
+        result.stats.finished_at = "2026-11-02T00:00:00Z"
+        return result
+
+    def _assert_kept(self, store, before: str, path: Path) -> None:
+        # 磁盘上一个字节都没动
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        # 返回给页面的还是上一轮的数据，站点不会消失
+        self.assertEqual(set(store["products"]), {"2", "5"})
+        self.assertEqual(store["products"]["2"]["status"], "active")
+        self.assertEqual(store["products"]["5"]["status"], "stale")
+        self.assertEqual(store["missing"], [7, 8])
+
+    def test_crawl_exception_keeps_previous_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"{self.site.id}.ndjson"
+            before = self._seed(path)
+            with mock.patch("scraper.main.crawl", side_effect=RuntimeError("cf 过不去")):
+                store = process_site(self.site, self._args(), Path(tmp))
+            self._assert_kept(store, before, path)
+
+    def test_failed_round_keeps_previous_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"{self.site.id}.ndjson"
+            before = self._seed(path)
+            with mock.patch("scraper.main.crawl", return_value=self._failed_result()):
+                store = process_site(self.site, self._args(), Path(tmp))
+            self._assert_kept(store, before, path)
+
+    def test_cloudflare_solve_failure_keeps_previous_data(self):
+        site = replace(self.site, feed=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"{site.id}.ndjson"
+            before = self._seed(path)
+            with mock.patch(
+                "scraper.main.get_credentials", side_effect=RuntimeError("浏览器起不来")
+            ), mock.patch("scraper.main.crawl") as crawl_call:
+                store = process_site(site, self._args(), Path(tmp))
+            crawl_call.assert_not_called()
+            self._assert_kept(store, before, path)
+
+    def test_successful_round_still_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"{self.site.id}.ndjson"
+            self._seed(path)
+            result = CrawlResult(min_pid=1, max_pid=400)
+            result.stats.scanned = 1
+            result.stats.ok = 1
+            result.stats.parsed = 1
+            result.stats.active = 1
+            result.stats.finished_at = "2026-11-02T00:00:00Z"
+            result.visited = {"9"}
+            result.found["9"] = {"pid": 9, "status": "active", "name": "新商品"}
+            with mock.patch("scraper.main.crawl", return_value=result):
+                store = process_site(self.site, self._args(), Path(tmp))
+            self.assertIn("9", store["products"])
+            self.assertIn("9", path.read_text(encoding="utf-8"))
+
+
 class RunSitesTest(unittest.TestCase):
     def test_different_sites_crawl_concurrently(self):
         sites = [fake_site(f"s{i}") for i in range(3)]
@@ -131,6 +224,27 @@ class RunSitesTest(unittest.TestCase):
             stores = run_sites(sites, None, Path("."), None)
 
         self.assertEqual([s["meta"]["site"] for s in stores], ["ok1", "ok2"])
+
+    def test_failed_site_falls_back_to_disk_data(self):
+        sites = [fake_site("ok"), fake_site("bad")]
+
+        def fake(site, args, data_dir, deadline=None):
+            if site.id == "bad":
+                raise RuntimeError("boom")
+            return {"meta": {"site": site.id}, "products": {"1": {}}, "missing": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            write_site(
+                Path(tmp) / "bad.ndjson", sites[1], {"active": 1}, [],
+                {"3": {"pid": 3, "status": "active", "name": "老数据"}},
+                "2026-11-01T00:00:00Z",
+            )
+            with mock.patch("scraper.main.process_site", fake):
+                stores = run_sites(sites, None, Path(tmp), None)
+
+        self.assertEqual([s["meta"]["site"] for s in stores], ["ok", "bad"])
+        bad = next(s for s in stores if s["meta"]["site"] == "bad")
+        self.assertIn("3", bad["products"])
 
     def test_single_site_runs_without_thread_pool(self):
         calls = []

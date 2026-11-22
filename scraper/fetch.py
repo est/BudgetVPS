@@ -36,7 +36,9 @@ class Fetcher:
     def get(self, path: str, timeout: float = 45.0) -> requests.Response:
         url = path if path.startswith("http") else self.base_url + path
         resp = self.session.get(url, timeout=timeout, allow_redirects=True)
-        if resp.status_code in (403, 503) and looks_like_challenge(resp.text):
+        # 有时 Cloudflare 用 200 返回验证页，body 里照样是挑战标记；
+        # 这种页面解析不出任何产品，绝不能当成"商品本轮没抓到"。
+        if looks_like_challenge(resp.text):
             raise ChallengeError(f"Cloudflare challenge on {url} ({resp.status_code})")
         return resp
 

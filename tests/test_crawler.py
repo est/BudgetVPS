@@ -228,5 +228,102 @@ class MergeStoreTest(unittest.TestCase):
         self.assertEqual(build_progress(result)["next_pid"], 77)
 
 
+class FailingFetcher:
+    """所有请求都抛异常，模拟 Cloudflare 拦死 / 站点挂掉。"""
+
+    def __init__(self, base_url: str, credentials: dict) -> None:
+        pass
+
+    def get(self, path: str, timeout: float = 45.0):
+        raise RuntimeError("connection reset")
+
+    def update_credentials(self, credentials: dict) -> None:
+        pass
+
+
+class BlankFetcher:
+    """请求都成功，但页面里什么都没有（比如 200 的验证页 / 维护页）。"""
+
+    class Response:
+        status_code = 200
+
+        def __init__(self) -> None:
+            self.text = "<html>maintenance</html>"
+            self.url = "https://example.com/cart.php"
+
+    def __init__(self, base_url: str, credentials: dict) -> None:
+        pass
+
+    def get(self, path: str, timeout: float = 45.0):
+        return self.Response()
+
+    def update_credentials(self, credentials: dict) -> None:
+        pass
+
+
+HISTORY = {
+    "products": {
+        "2": {"pid": 2, "status": "active", "name": "在售 A"},
+        "5": {"pid": 5, "status": "stale", "name": "已下架 B"},
+    },
+    "missing": [7, 8],
+    "progress": {"next_pid": 1, "complete": True, "min_pid": 1, "max_pid": 10},
+}
+
+
+class FailedRoundTest(unittest.TestCase):
+    site = CART_SITE
+
+    def _crawl(self, fetcher, previous):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "scraper.crawler.Fetcher", fetcher
+        ), mock.patch("scraper.crawler.time.sleep", lambda _: None), mock.patch(
+            "scraper.crawler.random.uniform", lambda _a, _b: 0.0
+        ):
+            return crawl(
+                self.site, 1, 4, 0.0, 0.0,
+                {"user_agent": "ua", "cookies": {}},
+                Path(tmp) / "cookies.json",
+                previous,
+            )
+
+    def test_all_requests_error_is_a_failed_round(self):
+        result = self._crawl(FailingFetcher, HISTORY)
+        self.assertTrue(result.stats.failed)
+        self.assertEqual(result.stats.ok, 0)
+        self.assertEqual(result.stats.errors, 4)
+
+    def test_blank_pages_with_history_is_a_failed_round(self):
+        result = self._crawl(BlankFetcher, HISTORY)
+        self.assertTrue(result.stats.failed)
+        self.assertGreater(result.stats.ok, 0)
+        self.assertEqual(result.stats.parsed, 0)
+
+    def test_blank_pages_without_history_is_not_failed(self):
+        # 全新站点本来就可能是空的，不该当成抓取失败
+        result = self._crawl(BlankFetcher, {})
+        self.assertFalse(result.stats.failed)
+
+    def test_failed_round_leaves_previous_statuses_untouched(self):
+        for fetcher in (FailingFetcher, BlankFetcher):
+            with self.subTest(fetcher=fetcher.__name__):
+                result = self._crawl(fetcher, HISTORY)
+                merged = merge_store(HISTORY, result, self.site)
+                self.assertTrue(merged["failed"])
+                self.assertEqual(merged["products"]["2"]["status"], "active")
+                self.assertEqual(merged["products"]["5"]["status"], "stale")
+                self.assertEqual(merged["missing"], [7, 8])
+
+    def test_mark_stale_false_only_adds_products(self):
+        # 中途落盘只做加法：抓到的新商品写进去，旧的绝不标 stale
+        previous = {"products": {"5": {"pid": 5, "status": "active", "name": "旧"}}}
+        result = CrawlResult(min_pid=1, max_pid=10)
+        result.visited = {"5"}
+        result.found["6"] = {"pid": 6, "status": "active", "name": "新"}
+        merged = merge_store(previous, result, self.site, mark_stale=False)
+        self.assertEqual(merged["products"]["5"]["status"], "active")
+        self.assertEqual(merged["products"]["6"]["name"], "新")
+
+
 if __name__ == "__main__":
     unittest.main()

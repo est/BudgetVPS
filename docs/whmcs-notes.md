@@ -219,6 +219,16 @@ curl -sS -X POST 'https://site/includes/api.php' \
 
 这个策略的取舍：feed 一个商品要 3–4 次小请求，比 cart 一次请求多；换来的是不依赖 Cloudflare，以及更准确的描述（例如 768 MB RAM 不会被 cart 四舍五入成 1 GB）。
 
+### 抓取失败的兜底
+
+反爬（Cloudflare 拦死）、站点挂掉、解析全歪，这几种情况都可能让一轮抓取"看起来跑完了、实际上什么都没抓到"。如果照常合并，历史里在售的商品会被整片标成 `stale`，列表就废了。所以：
+
+- **失败判定**（`crawler.round_failed`）：一个成功请求都没有，或者历史里有在售商品却一个都没解析出来。
+- **失败时**：`data/<site>.ndjson` 不写，页面直接用上一轮的数据，站点不会从列表里消失。
+- **中途落盘只做加法**（`merge_store(mark_stale=False)`）：只写入新抓到的商品，绝不把旧商品标成 `stale` / `out_of_stock`。
+- **异常也不放飞**：过 Cloudflare 失败（比如 CI 里浏览器起不来）、站点请求异常，都被 `process_site` 接住，保留上一轮数据并照常渲染。
+- 另外 `Fetcher` 会把 **200 但 body 是验证页** 的响应也当成 challenge 抛出去，避免这种页面被误判成"商品没了"。
+
 ## 9. 快速探测命令
 
 ```bash
